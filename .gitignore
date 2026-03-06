@@ -1,0 +1,22 @@
+# Claude Code local settings
+.claude/settings.local.json
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

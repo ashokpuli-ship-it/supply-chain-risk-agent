@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BOM Intelligence Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; }
+
+    .risk-badge-CRITICAL { background:#450a0a; color:#fca5a5; border:1px solid #7f1d1d; }
+    .risk-badge-HIGH     { background:#431407; color:#fdba74; border:1px solid #9a3412; }
+    .risk-badge-MEDIUM   { background:#422006; color:#fcd34d; border:1px solid #92400e; }
+    .risk-badge-LOW      { background:#052e16; color:#86efac; border:1px solid #166534; }
+
+    .row-CRITICAL { border-left: 3px solid #ef4444; }
+    .row-HIGH     { border-left: 3px solid #f97316; }
+    .row-MEDIUM   { border-left: 3px solid #f59e0b; }
+    .row-LOW      { border-left: 3px solid #22c55e; }
+
+    .gauge-track { fill: none; stroke: #1e293b; stroke-width: 10; }
+    .gauge-fill  { fill: none; stroke-width: 10; stroke-linecap: round;
+                   transition: stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1), stroke 0.5s ease; }
+
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+    input[type=text] { background:#0f172a; border:1px solid #334155; color:#e2e8f0; }
+    input[type=text]:focus { outline: none; border-color: #6366f1; }
+
+    thead th { background: #0f172a; position: sticky; top: 0; z-index: 1; }
+    tbody tr:hover { background: rgba(30,58,95,0.2); }
+
+    .tag { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- Header -->
+<header class="border-b border-slate-700 px-6 py-4 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">B</div>
+    <div>
+      <h1 class="text-white font-semibold text-lg leading-none">BOM Intelligence Agent</h1>
+      <p class="text-slate-400 text-xs mt-0.5">Supply Chain Risk Platform — Phase 1 POC</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-3">
+    <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500 inline-block"></span>
+    <span id="status-text" class="text-slate-400 text-sm">Loading…</span>
+    <button onclick="reloadBOM()"
+      class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors">
+      Reload BOM
+    </button>
+  </div>
+</header>
+
+<main class="px-6 py-6 max-w-screen-xl mx-auto space-y-5">
+
+  <!-- SKU selector -->
+  <div id="sku-selector" class="hidden">
+    <label class="text-slate-400 text-sm mr-2">SKU:</label>
+    <select id="sku-select" onchange="loadSKU(this.value)"
+      class="bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-1.5 text-sm">
+    </select>
+  </div>
+
+  <!-- Summary -->
+  <div id="summary" class="hidden space-y-4">
+
+    <!-- Top row: gauge + stat cards -->
+    <div class="flex flex-col lg:flex-row gap-4">
+
+      <!-- Gauge -->
+      <div class="card p-6 flex flex-col items-center justify-center min-w-[200px]">
+        <svg width="160" height="95" viewBox="0 0 160 95">
+          <path class="gauge-track" d="M 18 88 A 68 68 0 0 1 142 88" />
+          <path id="gauge-fill" class="gauge-fill" d="M 18 88 A 68 68 0 0 1 142 88"
+                stroke="#6366f1" stroke-dasharray="213" stroke-dashoffset="213" />
+        </svg>
+        <div id="gauge-score" class="text-4xl font-bold text-white -mt-3">—</div>
+        <div class="text-slate-400 text-xs mt-0.5">Risk Score (0–100)</div>
+        <div id="gauge-level" class="tag mt-2 risk-badge-LOW">—</div>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="card p-4">
+          <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">Total Components</div>
+          <div id="stat-total" class="text-3xl font-bold text-white">—</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">Single Source</div>
+          <div id="stat-single" class="text-3xl font-bold text-orange-400">—</div>
+          <div id="stat-single-pct" class="text-slate-500 text-xs mt-0.5"></div>
+        </div>
+        <div class="card p-4">
+          <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">With Substitutes</div>
+          <div id="stat-subs" class="text-3xl font-bold text-green-400">—</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">Dev Lifecycle</div>
+          <div id="stat-dev" class="text-3xl font-bold text-yellow-400">—</div>
+          <div class="text-slate-500 text-xs mt-0.5">not production-qualified</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top risks panel -->
+    <div class="card p-4">
+      <h2 class="text-white font-semibold text-sm mb-3 flex items-center gap-2">
+        <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        </svg>
+        Top Risk Drivers
+      </h2>
+      <ul id="top-risks" class="space-y-1.5 text-sm text-slate-300"></ul>
+    </div>
+
+    <!-- Components table -->
+    <div class="card overflow-hidden">
+      <!-- Toolbar -->
+      <div class="px-4 py-3 border-b border-slate-700 flex flex-wrap gap-3 items-center">
+        <h2 class="text-white font-semibold text-sm">Components</h2>
+        <div class="flex gap-1.5 ml-auto flex-wrap">
+          <button onclick="setFilter('ALL')"    id="btn-ALL"    class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-indigo-600 text-white">All</button>
+          <button onclick="setFilter('HIGH')"   id="btn-HIGH"   class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">HIGH</button>
+          <button onclick="setFilter('MEDIUM')" id="btn-MEDIUM" class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">MEDIUM</button>
+          <button onclick="setFilter('LOW')"    id="btn-LOW"    class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">LOW</button>
+        </div>
+        <input id="search" type="text" placeholder="Search item / description / MFR…"
+          oninput="renderTable()" class="text-sm rounded-lg px-3 py-1.5 w-64" />
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-slate-400 text-xs uppercase tracking-wide">
+              <th class="px-4 py-3 text-left">Item #</th>
+              <th class="px-4 py-3 text-left">Description</th>
+              <th class="px-4 py-3 text-left">Manufacturer</th>
+              <th class="px-4 py-3 text-left">MPN</th>
+              <th class="px-4 py-3 text-left">Risk</th>
+              <th class="px-4 py-3 text-right">Score</th>
+              <th class="px-4 py-3 text-left">Alternates</th>
+              <th class="px-4 py-3 text-left">Lifecycle</th>
+            </tr>
+          </thead>
+          <tbody id="component-tbody" class="divide-y divide-slate-800"></tbody>
+        </table>
+        <div id="table-footer" class="px-4 py-2 text-slate-500 text-xs border-t border-slate-800"></div>
+      </div>
+    </div>
+  </div><!-- /summary -->
+
+  <!-- Empty state -->
+  <div id="empty-state" class="card p-12 text-center hidden">
+    <div class="text-slate-500 text-5xl mb-4">○</div>
+    <p class="text-slate-300 font-medium">No BOM loaded</p>
+    <p class="text-slate-500 text-sm mt-1">
+      Click <strong class="text-indigo-400">Reload BOM</strong> or
+      POST <code class="text-indigo-400">/bom/load</code> with a file path.
+    </p>
+  </div>
+
+  <!-- Error state -->
+  <div id="error-state" class="card p-8 text-center hidden border-red-900">
+    <p class="text-red-400 font-medium" id="error-msg"></p>
+  </div>
+
+</main>
+
+<script>
+  let allComponents = [];
+  let activeFilter = 'ALL';
+  const GAUGE_ARC = 213;
+
+  const riskColour = { CRITICAL:'#ef4444', HIGH:'#f97316', MEDIUM:'#f59e0b', LOW:'#22c55e' };
+
+  function setStatus(ok, text) {
+    document.getElementById('status-dot').className =
+      'w-2 h-2 rounded-full inline-block ' + (ok ? 'bg-green-500' : 'bg-red-500');
+    document.getElementById('status-text').textContent = text;
+  }
+  function show(id) { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+  function esc(s)   { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function trunc(s,n){ s=String(s||''); return s.length>n ? s.slice(0,n)+'…':s; }
+
+  async function boot() {
+    try {
+      const skus = await fetch('/risk/skus').then(r => r.json());
+      if (!skus.length) { show('empty-state'); setStatus(false,'No BOM loaded'); return; }
+      populateSKUSelector(skus);
+      await loadSKU(skus[0].sku_id);
+    } catch(e) {
+      document.getElementById('error-msg').textContent = 'API unreachable — is uvicorn running?';
+      show('error-state'); setStatus(false,'Offline');
+    }
+  }
+
+  function populateSKUSelector(skus) {
+    const sel = document.getElementById('sku-select');
+    sel.innerHTML = skus.map(s =>
+      '<option value="'+esc(s.sku_id)+'">'+esc(s.sku_id)+' — '+esc(trunc(s.description,50))+'</option>'
+    ).join('');
+    if (skus.length > 1) document.getElementById('sku-selector').classList.remove('hidden');
+  }
+
+  async function loadSKU(skuId) {
+    hide('error-state'); hide('empty-state');
+    try {
+      const r = await fetch('/risk/sku/'+skuId).then(res => res.json());
+      renderReport(r);
+      setStatus(true, 'Loaded: '+skuId);
+    } catch(e) {
+      document.getElementById('error-msg').textContent = 'Failed to load SKU '+skuId;
+      show('error-state');
+    }
+  }
+
+  async function reloadBOM() {
+    setStatus(false,'Reloading…');
+    try { await fetch('/bom/load', {method:'POST'}); await boot(); }
+    catch(e) { document.getElementById('error-msg').textContent='Reload failed: '+e.message; show('error-state'); }
+  }
+
+  function renderReport(report) {
+    allComponents = report.component_risks;
+    const total = report.total_components;
+
+    document.getElementById('stat-total').textContent  = total;
+    document.getElementById('stat-single').textContent = report.single_source_count;
+    document.getElementById('stat-single-pct').textContent =
+      Math.round(report.single_source_count / total * 100) + '% of BOM';
+    document.getElementById('stat-subs').textContent = report.components_with_substitutes;
+    document.getElementById('stat-dev').textContent  = report.development_lifecycle_count;
+
+    // Gauge
+    const score = report.risk_score;
+    const colour = riskColour[report.risk_level] || '#6366f1';
+    document.getElementById('gauge-fill').style.strokeDashoffset = GAUGE_ARC - (score/100)*GAUGE_ARC;
+    document.getElementById('gauge-fill').style.stroke = colour;
+    document.getElementById('gauge-score').textContent = score.toFixed(1);
+    const lvlEl = document.getElementById('gauge-level');
+    lvlEl.textContent = report.risk_level;
+    lvlEl.className = 'tag mt-2 risk-badge-'+report.risk_level;
+
+    // Top risks
+    document.getElementById('top-risks').innerHTML = report.top_risks.map(r =>
+      '<li class="flex gap-2 items-start"><span class="text-red-400 mt-0.5 shrink-0">›</span><span>'+esc(r)+'</span></li>'
+    ).join('');
+
+    show('summary');
+    renderTable();
+  }
+
+  function setFilter(f) {
+    activeFilter = f;
+    ['ALL','HIGH','MEDIUM','LOW'].forEach(id => {
+      const btn = document.getElementById('btn-'+id);
+      if (id === f) {
+        btn.className = btn.className.replace('bg-slate-700','bg-indigo-600').replace('text-slate-300','text-white');
+      } else {
+        btn.className = btn.className.replace('bg-indigo-600','bg-slate-700').replace('text-white','text-slate-300');
+      }
+    });
+    renderTable();
+  }
+
+  function renderTable() {
+    const q = (document.getElementById('search').value||'').toLowerCase();
+    const filtered = allComponents.filter(c => {
+      if (activeFilter !== 'ALL' && c.substitute_risk !== activeFilter) return false;
+      if (q) {
+        const hay = [c.item_number,c.description,c.manufacturer,c.mpn].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    document.getElementById('component-tbody').innerHTML = filtered.map(c => {
+      const risk = c.substitute_risk;
+      const subCount = (c.substitutes||[]).length;
+      const subTag = subCount
+        ? '<span class="tag" style="background:#1e3a5f;color:#93c5fd;border:1px solid #1d4ed8">'+subCount+' sub'+(subCount>1?'s':'')+'</span>'
+        : '<span class="tag" style="background:#1c1917;color:#78716c;border:1px solid #44403c">none</span>';
+      const lcCls = c.lifecycle_phase === 'Development' ? 'text-yellow-400' : 'text-slate-400';
+
+      return '<tr class="row-'+risk+'">'
+        +'<td class="px-4 py-2.5 font-mono text-indigo-300 text-xs whitespace-nowrap">'+esc(c.item_number)+'</td>'
+        +'<td class="px-4 py-2.5 text-slate-300 max-w-xs"><span title="'+esc(c.description||'')+'">'+esc(trunc(c.description||'',48))+'</span></td>'
+        +'<td class="px-4 py-2.5 text-slate-400 whitespace-nowrap">'+esc(c.manufacturer||'—')+'</td>'
+        +'<td class="px-4 py-2.5 font-mono text-slate-400 text-xs whitespace-nowrap">'+esc(c.mpn||'—')+'</td>'
+        +'<td class="px-4 py-2.5"><span class="tag risk-badge-'+risk+'">'+risk+'</span></td>'
+        +'<td class="px-4 py-2.5 text-right font-semibold" style="color:'+(riskColour[risk]||'#94a3b8')+'">'+c.risk_score+'</td>'
+        +'<td class="px-4 py-2.5">'+subTag+'</td>'
+        +'<td class="px-4 py-2.5 text-xs '+lcCls+'">'+esc(c.lifecycle_phase||'—')+'</td>'
+        +'</tr>';
+    }).join('');
+
+    document.getElementById('table-footer').textContent =
+      'Showing '+filtered.length+' of '+allComponents.length+' components';
+  }
+
+  boot();
+</script>
+</body>
+</html>
