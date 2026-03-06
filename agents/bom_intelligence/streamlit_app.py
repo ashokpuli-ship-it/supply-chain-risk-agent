@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-_SAMPLE_BOM = Path(__file__).parent.parent.parent / "project docs" / "Sample BOM.xlsx"
+_SAMPLE_BOM = Path(__file__).parent.parent.parent / "Project Docs" / "Sample BOM.xlsx"
 
 _RISK_COLOURS = {
     "CRITICAL": "#ef4444",
@@ -95,17 +95,21 @@ def _gauge(score: float, level: str) -> go.Figure:
 def _to_df(report: SKURiskReport) -> pd.DataFrame:
     rows = []
     for c in report.component_risks:
+        sub_items = "; ".join(s.item_number for s in c.substitutes) or "—"
+        sub_mfrs  = "; ".join(s.manufacturer or "?" for s in c.substitutes) or "—"
+        sub_mpns  = "; ".join(s.mpn or "?" for s in c.substitutes) or "—"
         rows.append({
-            "Risk":        c.substitute_risk.value,
-            "Score":       c.risk_score,
-            "Item #":      c.item_number,
-            "Description": (c.description or "")[:60],
-            "Manufacturer": c.manufacturer or "—",
-            "MPN":         c.mpn or "—",
-            "Lifecycle":   c.lifecycle_phase or "—",
-            "Criticality": c.criticality_type or "—",
-            "Alternates":  len(c.substitutes),
-            "Drivers":     "; ".join(c.risk_drivers[:2]),
+            "Risk":          c.substitute_risk.value,
+            "Score":         c.risk_score,
+            "Item #":        c.item_number,
+            "Description":   (c.description or "")[:60],
+            "Manufacturer":  c.manufacturer or "—",
+            "MPN":           c.mpn or "—",
+            "Lifecycle":     c.lifecycle_phase or "—",
+            "Sub Item #":    sub_items,
+            "Sub Mfr":       sub_mfrs,
+            "Sub MPN":       sub_mpns,
+            "Drivers":       "; ".join(c.risk_drivers[:2]),
         })
     return pd.DataFrame(rows)
 
@@ -185,8 +189,8 @@ with col_stats:
     r2.metric("Single Source",     report.single_source_count,
               delta=f"{ss_pct}% of BOM", delta_color="inverse")
     r3.metric("With Substitutes",  report.components_with_substitutes)
-    r4.metric("Development Phase", report.development_lifecycle_count,
-              help="Components not yet production-qualified")
+    r4.metric("EOL / LTB / NRND", report.at_risk_lifecycle_count,
+              help="Components with at-risk lifecycle phase")
 
 
 # ── Top risk drivers ──────────────────────────────────────────────────────────
@@ -223,6 +227,7 @@ def _show_table(data: pd.DataFrame, key_suffix: str) -> None:
         .map(_colour_risk, subset=["Risk"])
         .background_gradient(subset=["Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
         .format({"Score": "{:.1f}"})
+        .set_properties(subset=["Sub Item #", "Sub Mfr", "Sub MPN"], **{"color": "#94a3b8"})
     )
     st.dataframe(
         styled,
@@ -230,9 +235,11 @@ def _show_table(data: pd.DataFrame, key_suffix: str) -> None:
         hide_index=True,
         column_config={
             "Score":       st.column_config.NumberColumn("Score", format="%.1f"),
-            "Alternates":  st.column_config.NumberColumn("Alts", width="small"),
-            "Drivers":     st.column_config.TextColumn("Risk Drivers", width="large"),
             "Description": st.column_config.TextColumn("Description", width="large"),
+            "Sub Item #":  st.column_config.TextColumn("Sub Item #", width="medium"),
+            "Sub Mfr":     st.column_config.TextColumn("Sub Manufacturer", width="medium"),
+            "Sub MPN":     st.column_config.TextColumn("Sub MPN", width="medium"),
+            "Drivers":     st.column_config.TextColumn("Risk Drivers", width="large"),
         },
     )
     st.caption(f"{len(data)} components shown")

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the **Multi-Agent Supply Chain Risk Intelligence Platform** — an AI platform that integrates Propel PLM BOM data with real-time external signals (news, suppliers, logistics, compliance) to provide proactive risk detection and mitigation recommendations.
 
-Phase 1 (POC) of the BOM Intelligence Agent is built and running. The `project docs/` folder contains the business case, requirements document, and sample BOM Excel file.
+Phase 1 (POC) of the BOM Intelligence Agent is built and running. The `Project Docs/` folder contains the business case, requirements document, and sample BOM Excel file.
 
 ## Development Commands
 
@@ -34,7 +34,7 @@ cd agents/bom_intelligence
 .venv/bin/streamlit run streamlit_app.py
 ```
 
-On startup, both interfaces auto-load `project docs/Sample BOM.xlsx` if present. PostgreSQL is optional — the app runs in memory-only mode without it.
+On startup, both interfaces auto-load `Project Docs/Sample BOM.xlsx` if present. PostgreSQL is optional — the app runs in memory-only mode without it.
 
 **Load a BOM via API**
 ```bash
@@ -250,7 +250,7 @@ If chained: `Item-A → Item-B → Item-C` — should this be treated as:
 
 ## Sample BOM Data — Schema & Structure
 
-The file `project docs/Sample BOM.xlsx` is a real BOM exported from Propel PLM for SKU `310-00-00183` (UCT-COP,DIP,PCBA,VER.D). The same structure is returned by the Propel PLM API.
+The file `Project Docs/Sample BOM.xlsx` is a real BOM exported from Propel PLM for SKU `310-00-00183` (UCT-COP,DIP,PCBA,VER.D). The same structure is returned by the Propel PLM API.
 
 **Dataset stats:**
 - 1 top-level SKU (Level 0)

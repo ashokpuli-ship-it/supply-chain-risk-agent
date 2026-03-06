@@ -7,11 +7,13 @@ from substitute_analyzer import analyze_substitutes
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 # SKU-level score: weighted sum of per-ratio contributions (result is 0–100)
+# Lifecycle phases that carry elevated risk (from Propel PLM data)
+_AT_RISK_LIFECYCLE = {"EOL", "LTB", "NRND"}
+
 _SKU_WEIGHTS = {
-    "single_source":          70,   # Dominant factor: no substitute at all
-    "same_mfr_substitute":    15,   # Substitute exists but same manufacturer
-    "development_lifecycle":  10,   # Not production-qualified
-    "function_criticality":    5,   # Marked as functionally critical
+    "single_source":       75,   # Dominant factor: no substitute at all
+    "same_mfr_substitute": 15,   # Substitute exists but same manufacturer
+    "at_risk_lifecycle":   10,   # EOL / LTB / NRND components
 }
 
 # Component-level base scores by risk tier
@@ -23,9 +25,7 @@ _COMP_BASE = {
 
 # Component-level modifier scores
 _COMP_MODIFIERS = {
-    "development_lifecycle": 15,
-    "function_criticality":  10,
-    "flag_risk_review":       5,
+    "at_risk_lifecycle": 15,
 }
 
 # SKU risk level thresholds (score → label)
@@ -52,8 +52,7 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
     component_risks: list[ComponentRisk] = []
     single_source_count = 0
     same_mfr_sub_count = 0
-    dev_lifecycle_count = 0
-    function_crit_count = 0
+    at_risk_lifecycle_count = 0
 
     for comp in bom.primary_components:
         sub_risk, subs = sub_map.get(comp.item_number, (SubstituteRisk.HIGH, []))
@@ -71,21 +70,10 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
             drivers.append("Substitute available from different manufacturer")
 
         # Lifecycle modifier
-        if comp.lifecycle_phase == "Development":
-            score += _COMP_MODIFIERS["development_lifecycle"]
-            drivers.append("Lifecycle: Development (not production-qualified)")
-            dev_lifecycle_count += 1
-
-        # Criticality modifier
-        if comp.criticality_type == "Function":
-            score += _COMP_MODIFIERS["function_criticality"]
-            drivers.append("Criticality: Function")
-            function_crit_count += 1
-
-        # Manual flag modifier
-        if comp.flag_risk_review:
-            score += _COMP_MODIFIERS["flag_risk_review"]
-            drivers.append("Flagged for risk review")
+        if comp.lifecycle_phase in _AT_RISK_LIFECYCLE:
+            score += _COMP_MODIFIERS["at_risk_lifecycle"]
+            drivers.append(f"Lifecycle: {comp.lifecycle_phase}")
+            at_risk_lifecycle_count += 1
 
         component_risks.append(
             ComponentRisk(
@@ -113,13 +101,12 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
         sku_score = round(
             (single_source_count / total) * _SKU_WEIGHTS["single_source"]
             + (same_mfr_sub_count / total) * _SKU_WEIGHTS["same_mfr_substitute"]
-            + (dev_lifecycle_count / total) * _SKU_WEIGHTS["development_lifecycle"]
-            + (function_crit_count / total) * _SKU_WEIGHTS["function_criticality"],
+            + (at_risk_lifecycle_count / total) * _SKU_WEIGHTS["at_risk_lifecycle"],
             1,
         )
 
     risk_level = next(lvl for threshold, lvl in _RISK_THRESHOLDS if sku_score >= threshold)
-    top_risks = _build_top_risks(component_risks, single_source_count, same_mfr_sub_count, dev_lifecycle_count, total)
+    top_risks = _build_top_risks(component_risks, single_source_count, same_mfr_sub_count, at_risk_lifecycle_count, total)
 
     return SKURiskReport(
         sku_id=bom.sku_id,
@@ -128,7 +115,7 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
         single_source_count=single_source_count,
         components_with_substitutes=total - single_source_count,
         same_manufacturer_substitute_count=same_mfr_sub_count,
-        development_lifecycle_count=dev_lifecycle_count,
+        at_risk_lifecycle_count=at_risk_lifecycle_count,
         risk_score=sku_score,
         risk_level=risk_level,
         component_risks=component_risks,
@@ -140,7 +127,7 @@ def _build_top_risks(
     risks: list[ComponentRisk],
     single_source: int,
     same_mfr: int,
-    dev_lifecycle: int,
+    at_risk_lifecycle: int,
     total: int,
 ) -> list[str]:
     messages: list[str] = []
@@ -155,10 +142,9 @@ def _build_top_risks(
             "limited risk reduction"
         )
 
-    if dev_lifecycle:
+    if at_risk_lifecycle:
         messages.append(
-            f"{dev_lifecycle} components are in Development lifecycle — "
-            "not yet production-qualified"
+            f"{at_risk_lifecycle} components have at-risk lifecycle (EOL / LTB / NRND)"
         )
 
     # Top 3 highest-risk individual components

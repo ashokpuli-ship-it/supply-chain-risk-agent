@@ -71,7 +71,7 @@ class SKURiskReport(BaseModel):
     single_source_count: int
     components_with_substitutes: int
     same_manufacturer_substitute_count: int
-    development_lifecycle_count: int
+    at_risk_lifecycle_count: int   # EOL + LTB + NRND components
     risk_score: float
     risk_level: str  # LOW | MEDIUM | HIGH | CRITICAL
     component_risks: list[ComponentRisk]
