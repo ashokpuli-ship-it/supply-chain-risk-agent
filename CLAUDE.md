@@ -196,14 +196,16 @@ MATCH (c:Component)<-[:USES]-(sku:SKU) RETURN sku
 ```
 
 **Function 5 — BOM Risk Scoring**
-Per-SKU risk score (0–100):
+Per-SKU risk score (0–100), weighted ratios of component counts:
 
-| Risk Type | Weight |
-|---|---|
-| Single source | 5 |
-| Same manufacturer substitute | 3 |
-| Lifecycle risk (NRND/EOL) | 4 |
-| Supplier concentration | 3 |
+| Factor | SKU Weight | Component Base/Modifier |
+|---|---|---|
+| Single source (no substitute) | 75 | base 70 |
+| Same-manufacturer substitute | 15 | base 40 |
+| Different-manufacturer substitute | — | base 10 |
+| At-risk lifecycle (EOL / LTB / NRND) | 10 | +15 modifier |
+
+Additional factors (not yet active, to be added): supplier concentration, criticality, manual risk flags.
 
 ### Internal Microservices
 
@@ -254,9 +256,10 @@ The file `Project Docs/Sample BOM.xlsx` is a real BOM exported from Propel PLM f
 
 **Dataset stats:**
 - 1 top-level SKU (Level 0)
-- 121 primary components (Level 1, `Is Substitute = False`)
+- 120 primary components (Level 1, `Is Substitute = False`)
 - 11 substitute items (Level 1, `Is Substitute = True`)
-- 11 primary components have a substitute → 110 are single source (90.9%)
+- 11 primary components have a substitute → 109 are single source (91%)
+- Lifecycle breakdown: 109 ACTIVE, 6 EOL, 5 LTB, 1 NRND (12 at-risk total)
 
 ### Column Schema
 
@@ -269,7 +272,7 @@ The file `Project Docs/Sample BOM.xlsx` is a real BOM exported from Propel PLM f
 | `Description` | Component description / part name |
 | `Manufacturer` | Manufacturer name |
 | `Manufacturer Part Number` | Manufacturer's MPN |
-| `Lifecycle Phase` | `Production` or `Development` |
+| `Lifecycle Phase` | `ACTIVE`, `EOL` (End of Life), `LTB` (Last Time Buy), `NRND` (Not Recommended for New Designs) |
 | `Criticality Type` | `Function`, `NA`, or empty |
 | `Reference Designators` | PCB reference designator(s) |
 | `Quantity` | Qty used in this BOM |
@@ -309,5 +312,4 @@ Real examples from the dataset:
 1. **To find all substitutes for a component:** find rows where `Substitute For == component_item_number`
 2. **To detect single source:** primary component rows where no other row has `Substitute For == this item number`
 3. **Same-manufacturer substitute risk:** compare `Manufacturer` of primary vs substitute row
-4. **Lifecycle risk flags:** `Development` lifecycle = not yet production-qualified; treat with elevated risk
-5. **Criticality = `Function`** marks functionally critical components (extra weight in risk scoring)
+4. **Lifecycle risk flags:** `EOL`, `LTB`, `NRND` are at-risk phases — add +15 to component score and count toward SKU lifecycle weight. `ACTIVE` = no risk.

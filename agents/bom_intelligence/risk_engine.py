@@ -106,7 +106,7 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
         )
 
     risk_level = next(lvl for threshold, lvl in _RISK_THRESHOLDS if sku_score >= threshold)
-    top_risks = _build_top_risks(component_risks, single_source_count, same_mfr_sub_count, at_risk_lifecycle_count, total)
+    top_risks = _build_top_risks(single_source_count, same_mfr_sub_count, at_risk_lifecycle_count, total)
 
     return SKURiskReport(
         sku_id=bom.sku_id,
@@ -124,7 +124,6 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
 
 
 def _build_top_risks(
-    risks: list[ComponentRisk],
     single_source: int,
     same_mfr: int,
     at_risk_lifecycle: int,
@@ -145,14 +144,6 @@ def _build_top_risks(
     if at_risk_lifecycle:
         messages.append(
             f"{at_risk_lifecycle} components have at-risk lifecycle (EOL / LTB / NRND)"
-        )
-
-    # Top 3 highest-risk individual components
-    for comp in risks[:3]:
-        short_desc = (comp.description or "")[:50]
-        primary_driver = comp.risk_drivers[0] if comp.risk_drivers else ""
-        messages.append(
-            f"{comp.item_number} ({short_desc}): {primary_driver}"
         )
 
     return messages
