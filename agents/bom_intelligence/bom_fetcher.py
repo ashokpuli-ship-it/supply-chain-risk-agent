@@ -18,14 +18,32 @@ _EXCEL_COLUMNS = {
     "Manufacturer Part Number": "mpn",
     "Lifecycle Phase":          "lifecycle_phase",
     "Criticality Type":         "criticality_type",
+    "Country of Origin":        "country_of_origin",
     "Quantity":                 "quantity",
     "Lead Time (Days)":         "lead_time_days",
+    "MOQ":                      "moq",
+    "Multiple Source Status":   "multiple_source_status",
+    "Unique to Samsara":        "unique_to_samsara",
     "Is Substitute":            "is_substitute",
     "Reference Designators":    "reference_designators",
     "Vendor":                   "vendor",
     "Vendor Part#":             "vendor_part",
     "Flag Risk Review":         "flag_risk_review",
 }
+
+
+def _parse_bool(value) -> Optional[bool]:
+    """Parse Yes/No/True/False/1/0 cell values to bool."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("yes", "true", "1"):
+        return True
+    if s in ("no", "false", "0"):
+        return False
+    return None
 
 
 def _cell(row: tuple, idx: dict[str, int], key: str):
@@ -61,13 +79,17 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
         if raw_item is None:
             continue
 
-        raw_level = _cell(row, idx, "Level")
+        raw_level  = _cell(row, idx, "Level")
         raw_sub_for = _cell(row, idx, "Substitute For")
-        raw_crit = _cell(row, idx, "Criticality Type")
-        raw_qty = _cell(row, idx, "Quantity")
-        raw_lt = _cell(row, idx, "Lead Time (Days)")
+        raw_crit   = _cell(row, idx, "Criticality Type")
+        raw_coo    = _cell(row, idx, "Country of Origin")
+        raw_qty    = _cell(row, idx, "Quantity")
+        raw_lt     = _cell(row, idx, "Lead Time (Days)")
+        raw_moq    = _cell(row, idx, "MOQ")
+        raw_mss    = _cell(row, idx, "Multiple Source Status")
+        raw_unique = _cell(row, idx, "Unique to Samsara")
         raw_is_sub = _cell(row, idx, "Is Substitute")
-        raw_flag = _cell(row, idx, "Flag Risk Review")
+        raw_flag   = _cell(row, idx, "Flag Risk Review")
 
         level = int(raw_level) if raw_level is not None else 0
 
@@ -80,13 +102,17 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
             mpn=_cell(row, idx, "Manufacturer Part Number"),
             lifecycle_phase=_cell(row, idx, "Lifecycle Phase"),
             criticality_type=str(raw_crit) if raw_crit not in (None, "None") else None,
+            country_of_origin=str(raw_coo).strip() if raw_coo not in (None, "None", "") else None,
             quantity=float(raw_qty) if raw_qty is not None else None,
             lead_time_days=float(raw_lt) if raw_lt is not None else None,
-            is_substitute=bool(raw_is_sub) if raw_is_sub is not None else False,
+            moq=float(raw_moq) if raw_moq is not None else None,
+            multiple_source_status=str(raw_mss).strip() if raw_mss not in (None, "None", "") else None,
+            unique_to_samsara=_parse_bool(raw_unique),
+            is_substitute=_parse_bool(raw_is_sub) or False,
             reference_designators=_cell(row, idx, "Reference Designators"),
             vendor=_cell(row, idx, "Vendor"),
             vendor_part=_cell(row, idx, "Vendor Part#"),
-            flag_risk_review=bool(raw_flag) if raw_flag is not None else None,
+            flag_risk_review=_parse_bool(raw_flag),
         )
 
         if level == 0:

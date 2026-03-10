@@ -95,21 +95,33 @@ def _gauge(score: float, level: str) -> go.Figure:
 def _to_df(report: SKURiskReport) -> pd.DataFrame:
     rows = []
     for c in report.component_risks:
+        _AT_RISK = {"EOL", "LTB", "NRND"}
         sub_items = "; ".join(s.item_number for s in c.substitutes) or "—"
         sub_mfrs  = "; ".join(s.manufacturer or "?" for s in c.substitutes) or "—"
         sub_mpns  = "; ".join(s.mpn or "?" for s in c.substitutes) or "—"
+        sub_lc    = "; ".join(
+            f"{s.item_number}: {s.lifecycle_phase}"
+            for s in c.substitutes if s.lifecycle_phase in _AT_RISK
+        ) or "—"
         rows.append({
-            "Risk":          c.substitute_risk.value,
-            "Score":         c.risk_score,
-            "Item #":        c.item_number,
-            "Description":   (c.description or "")[:60],
-            "Manufacturer":  c.manufacturer or "—",
-            "MPN":           c.mpn or "—",
-            "Lifecycle":     c.lifecycle_phase or "—",
-            "Sub Item #":    sub_items,
-            "Sub Mfr":       sub_mfrs,
-            "Sub MPN":       sub_mpns,
-            "Drivers":       "; ".join(c.risk_drivers[:2]),
+            "Risk":         c.substitute_risk.value,
+            "Score":        c.risk_score,
+            "Item #":       c.item_number,
+            "Description":  (c.description or "")[:60],
+            "Manufacturer": c.manufacturer or "—",
+            "MPN":          c.mpn or "—",
+            "Lifecycle":    c.lifecycle_phase or "—",
+            "Criticality":  c.criticality_type or "—",
+            "Origin":       c.country_of_origin or "—",
+            "Lead Time":    int(c.lead_time_days) if c.lead_time_days else "—",
+            "MOQ":          int(c.moq) if c.moq else "—",
+            "Multi Source": c.multiple_source_status or "—",
+            "Unique":       "Yes" if c.unique_to_samsara else ("No" if c.unique_to_samsara is not None else "—"),
+            "Sub Item #":   sub_items,
+            "Sub Mfr":      sub_mfrs,
+            "Sub MPN":      sub_mpns,
+            "Sub Lifecycle": sub_lc,
+            "Drivers":      "; ".join(c.risk_drivers[:2]),
         })
     return pd.DataFrame(rows)
 
@@ -179,18 +191,22 @@ with col_gauge:
     )
 
 with col_stats:
-    r1, r2 = st.columns(2)
-    r3, r4 = st.columns(2)
+    r1, r2, r3 = st.columns(3)
+    r4, r5, r6 = st.columns(3)
 
     total = report.total_components
     ss_pct = round(report.single_source_count / total * 100) if total else 0
 
-    r1.metric("Total Components",  total)
-    r2.metric("Single Source",     report.single_source_count,
+    r1.metric("Total Components",   total)
+    r2.metric("Single Source",      report.single_source_count,
               delta=f"{ss_pct}% of BOM", delta_color="inverse")
-    r3.metric("With Substitutes",  report.components_with_substitutes)
-    r4.metric("EOL / LTB / NRND", report.at_risk_lifecycle_count,
+    r3.metric("With Substitutes",   report.components_with_substitutes)
+    r4.metric("EOL / LTB / NRND",  report.at_risk_lifecycle_count,
               help="Components with at-risk lifecycle phase")
+    r5.metric("Critical Parts",     report.critical_parts_count,
+              help="Field / Safety / Field & Safety components")
+    r6.metric("Unique to Samsara",  report.unique_to_samsara_count,
+              help="No ecosystem alternatives if discontinued")
 
 
 # ── Top risk drivers ──────────────────────────────────────────────────────────
@@ -227,19 +243,26 @@ def _show_table(data: pd.DataFrame, key_suffix: str) -> None:
         .map(_colour_risk, subset=["Risk"])
         .background_gradient(subset=["Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
         .format({"Score": "{:.1f}"})
-        .set_properties(subset=["Sub Item #", "Sub Mfr", "Sub MPN"], **{"color": "#94a3b8"})
+        .set_properties(subset=["Sub Item #", "Sub Mfr", "Sub MPN", "Sub Lifecycle"], **{"color": "#94a3b8"})
     )
     st.dataframe(
         styled,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Score":       st.column_config.NumberColumn("Score", format="%.1f"),
-            "Description": st.column_config.TextColumn("Description", width="large"),
-            "Sub Item #":  st.column_config.TextColumn("Sub Item #", width="medium"),
-            "Sub Mfr":     st.column_config.TextColumn("Sub Manufacturer", width="medium"),
-            "Sub MPN":     st.column_config.TextColumn("Sub MPN", width="medium"),
-            "Drivers":     st.column_config.TextColumn("Risk Drivers", width="large"),
+            "Score":        st.column_config.NumberColumn("Score", format="%.1f"),
+            "Description":  st.column_config.TextColumn("Description", width="large"),
+            "Criticality":  st.column_config.TextColumn("Criticality", width="small"),
+            "Origin":       st.column_config.TextColumn("Country of Origin", width="small"),
+            "Lead Time":    st.column_config.TextColumn("Lead Time (Days)", width="small"),
+            "MOQ":          st.column_config.TextColumn("MOQ", width="small"),
+            "Multi Source": st.column_config.TextColumn("Multi Source Status", width="small"),
+            "Unique":       st.column_config.TextColumn("Unique to Samsara", width="small"),
+            "Sub Item #":    st.column_config.TextColumn("Sub Item #", width="medium"),
+            "Sub Mfr":       st.column_config.TextColumn("Sub Manufacturer", width="medium"),
+            "Sub MPN":       st.column_config.TextColumn("Sub MPN", width="medium"),
+            "Sub Lifecycle": st.column_config.TextColumn("Sub Lifecycle ⚠", width="medium"),
+            "Drivers":      st.column_config.TextColumn("Risk Drivers", width="large"),
         },
     )
     st.caption(f"{len(data)} components shown")

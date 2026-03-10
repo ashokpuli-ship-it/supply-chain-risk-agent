@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the **Multi-Agent Supply Chain Risk Intelligence Platform** — an AI platform that integrates Propel PLM BOM data with real-time external signals (news, suppliers, logistics, compliance) to provide proactive risk detection and mitigation recommendations.
 
-Phase 1 (POC) of the BOM Intelligence Agent is built and running. The `Project Docs/` folder contains the business case, requirements document, and sample BOM Excel file.
+Phase 1 (POC) of the BOM Intelligence Agent is built and running. The `Project Docs/` folder contains the business case, requirements document, and sample BOM Excel files.
 
 ## Development Commands
 
@@ -28,7 +28,7 @@ cd agents/bom_intelligence
 # Interactive API docs: http://localhost:8000/docs
 ```
 
-**Run Streamlit dashboard** (visual BOM risk UI)
+**Run Streamlit dashboard** (visual BOM risk UI at `http://localhost:8501`)
 ```bash
 cd agents/bom_intelligence
 .venv/bin/streamlit run streamlit_app.py
@@ -41,6 +41,11 @@ On startup, both interfaces auto-load `Project Docs/Sample BOM.xlsx` if present.
 curl -X POST "http://localhost:8000/bom/load?filepath=/abs/path/to/BOM.xlsx"
 ```
 
+**If port 8000 is in use:**
+```bash
+lsof -ti :8000 | xargs kill -9
+```
+
 ---
 
 ## Current Code Structure
@@ -49,10 +54,10 @@ The only built module is the **BOM Intelligence Agent** at `agents/bom_intellige
 
 | File | Role |
 |---|---|
-| `models.py` | Pydantic data models: `BOMComponent`, `BOMData`, `ComponentRisk`, `SKURiskReport` |
+| `models.py` | Pydantic data models: `BOMComponent`, `BOMData`, `SubstituteInfo`, `ComponentRisk`, `SKURiskReport` |
 | `bom_fetcher.py` | Parses Propel Excel exports → `BOMData`; contains `PropelAPIClient` stub |
 | `bom_graph_builder.py` | Builds NetworkX `DiGraph` with `USES` and `SUBSTITUTE` edges |
-| `substitute_analyzer.py` | Classifies each primary component's substitute risk (HIGH/MEDIUM/LOW) |
+| `substitute_analyzer.py` | Classifies each primary component's substitute risk (HIGH/MEDIUM/LOW) using manufacturer + region + lifecycle viability |
 | `risk_engine.py` | Aggregates component risks into `SKURiskReport` with weighted SKU score (0–100) |
 | `database.py` | SQLAlchemy ORM (`DBComponent`, `DBRiskScore`); gracefully degrades if no DB |
 | `api.py` | FastAPI app; serves endpoints + static `index.html`; holds in-memory BOM/report cache |
@@ -154,68 +159,77 @@ SKU-A
 **Output** — Structured intelligence:
 ```
 SKU Risk Indicators
-Total components: 132
-Single source components: 37
-Components with substitutes: 95
-High Impact Risks:
-  Item-4 → No substitute
-  Item-2 → substitute but same manufacturer
-  Item-7 → used in 9 SKUs
+Total components: 16
+Single source components: 7
+Components with substitutes: 9
+Top Risk Drivers:
+  7/16 components are single source (44% of BOM)
+  4 components have weak substitutes (same manufacturer or region)
+  2 components have at-risk lifecycle (EOL / LTB / NRND)
+  9 components are safety or field-critical
+  4 components are unique to Samsara
 ```
 
-### 5 Core Intelligence Functions
+### 5 Core Analysis Functions
 
-**Function 1 — BOM Structure Parsing**
-Build a machine-readable graph of the BOM using Neo4j.
-```
-(SKU) → USES → (Assembly) → USES → (Component) → SUBSTITUTE → (Component)
-```
-Node example: `{ type: component, mpn: ABC123, manufacturer: TI, lifecycle: Active }`
-
-**Function 2 — Substitute Intelligence**
-Classify substitute risk for each component:
-
-| Scenario | Risk Level |
-|---|---|
-| No substitute | HIGH |
-| Substitute, same manufacturer | MEDIUM |
-| Substitute, different manufacturer | LOW |
-
-**Function 3 — Single Source Detection**
+**Function 1 — Single Source Detection**
 ```python
-for component in BOM:
-    if no substitute relationship exists:
-        mark single source
-# Output: single_source_count / total → risk ratio (executive metric)
+if substitutes_count == 0 AND multiple_source_status == "Single":
+    → Confirmed single source (HIGH structural risk)
+if substitutes_count == 0 AND multiple_source_status == "Multi":
+    → No BOM substitute listed — verify with sourcing
 ```
+Output: `single_source_count / total` → risk ratio (executive metric)
 
-**Function 4 — Where-Used Intelligence**
+**Function 2 — Substitute Quality Check**
+Classify substitute coverage for each primary component:
+
+| Scenario | Risk Level | Notes |
+|---|---|---|
+| No substitute | HIGH | base score 70 |
+| Substitute exists, same manufacturer OR same region | MEDIUM | base score 40 — weak substitute |
+| Substitute exists, different manufacturer AND different region | LOW | base score 10 — strong substitute |
+| Substitute exists but ALL substitutes are EOL/LTB/NRND | MEDIUM | viable substitute count = 0 |
+
+> **Viable substitute rule:** EOL/LTB/NRND substitutes are excluded from LOW classification. A substitute that is itself at-risk lifecycle provides no real coverage. The substitute's lifecycle phase is flagged in risk drivers.
+
+**Function 3 — Portfolio Dependency (Where-Used)**
 Map which SKUs depend on each component. Risk amplification: if a component goes EOL, all dependent SKUs are impacted.
 ```cypher
 MATCH (c:Component)<-[:USES]-(sku:SKU) RETURN sku
 ```
+API: `GET /component/{item_id}/where-used`
+
+**Function 4 — Criticality Amplification**
+Parts marked `Field`, `Safety`, or `Field & Safety` increase risk severity:
+- Component score modifier: +15
+- Counted toward SKU-level criticality weight
 
 **Function 5 — BOM Risk Scoring**
 Per-SKU risk score (0–100), weighted ratios of component counts:
 
 | Factor | SKU Weight | Component Base/Modifier |
 |---|---|---|
-| Single source (no substitute) | 75 | base 70 |
-| Same-manufacturer substitute | 15 | base 40 |
-| Different-manufacturer substitute | — | base 10 |
+| Single source (no substitute) | 60 | base 70 |
+| Weak substitute (same mfr or region) | 15 | base 40 |
 | At-risk lifecycle (EOL / LTB / NRND) | 10 | +15 modifier |
+| Critical parts (Field / Safety / Field & Safety) | 10 | +15 modifier |
+| Unique to Samsara | 5 | +10 modifier |
 
-Additional factors (not yet active, to be added): supplier concentration, criticality, manual risk flags.
+SKU risk level thresholds: CRITICAL ≥ 80 | HIGH ≥ 55 | MEDIUM ≥ 30 | LOW < 30
+
+Additional factors (not yet active, to be added): supplier concentration, manual risk flags.
+
+### Samsara-Unique Parts
+If `Unique to Samsara = Yes`, the component has no ecosystem alternatives if discontinued. This increases component score by +10 and contributes to the SKU's unique_to_samsara weight.
 
 ### Internal Microservices
-
-Implement as modular Python services behind FastAPI:
 
 | Service | Responsibility | Libraries |
 |---|---|---|
 | BOM Extractor | Pull data from Propel PLM API | Python, FastAPI |
 | BOM Graph Builder | Build BOM network in Neo4j | networkx, neo4j driver |
-| Substitute Analyzer | Detect alternate coverage | — |
+| Substitute Analyzer | Detect alternate coverage (mfr + region + lifecycle) | — |
 | Single Source Detector | Identify vulnerable components | — |
 | Where Used Engine | Cross-SKU dependency mapping | — |
 | Risk Scoring Engine | Convert component risk → SKU score | — |
@@ -230,38 +244,49 @@ Propel PLM API → BOM Extractor → Graph Builder → Substitute Analyzer
 ### FastAPI Endpoints
 
 ```
-GET /risk/sku/{sku_id}          # SKU-level risk summary
-GET /risk/components/high       # All high-risk components
-GET /component/{item_id}/where-used  # Cross-SKU dependency
+POST /bom/load                       # Load a BOM from Excel filepath
+GET  /risk/skus                      # List all loaded SKUs with summary scores
+GET  /risk/sku/{sku_id}              # Full risk report for a SKU
+GET  /risk/components/high           # HIGH-risk components across loaded SKUs
+GET  /component/{item_id}/where-used # Cross-SKU dependency
+GET  /health                         # Health check
 ```
 
 ### Open Design Question
 
-Current substitute modeling:
+Substitute chain modeling — current approach is flat (non-chained):
 ```
 Item-A → Substitute → Item-B
 ```
-If chained: `Item-A → Item-B → Item-C` — should this be treated as:
-- **Chain** (A has 1 alternate: B, which itself has 1 alternate: C), or
-- **Multi-alternate** (A has 2 alternates: B and C)?
-
-**This decision changes the graph algorithm design.** Resolve before building Function 2.
-
+If chained: `Item-A → Item-B → Item-C` — treat as chain or multi-alternate?
+**This decision changes the graph algorithm design.** Resolve before scaling to multi-level BOMs.
 
 ---
 
 ## Sample BOM Data — Schema & Structure
 
-The file `Project Docs/Sample BOM.xlsx` is a real BOM exported from Propel PLM for SKU `310-00-00183` (UCT-COP,DIP,PCBA,VER.D). The same structure is returned by the Propel PLM API.
+Two sample files are available in `Project Docs/`:
 
-**Dataset stats:**
-- 1 top-level SKU (Level 0)
-- 120 primary components (Level 1, `Is Substitute = False`)
-- 11 substitute items (Level 1, `Is Substitute = True`)
-- 11 primary components have a substitute → 109 are single source (91%)
-- Lifecycle breakdown: 109 ACTIVE, 6 EOL, 5 LTB, 1 NRND (12 at-risk total)
+| File | SKU | Purpose |
+|---|---|---|
+| `Sample BOM.xlsx` | `310-00-00183` | Real Propel PLM export — no Country of Origin / MOQ / Unique to Samsara columns |
+| `Sample BOM Extended.xlsx` | `310-00-00200` | Synthetic dataset covering all analysis dimensions (16 primary, 9 substitutes) |
 
-### Column Schema
+### Extended Sample — Scenario Coverage
+
+| Scenario | Component(s) | Expected Score |
+|---|---|---|
+| Single source + Safety + Unique to Samsara | MCU, GPS, Secure Element | 95 (CRITICAL) |
+| Single source + Field & Safety + Unique | PMIC, Secure Element | 95 (CRITICAL) |
+| Single source + Field + NRND/EOL lifecycle | RF PA, 4G Modem | 100 (CRITICAL) |
+| Single source, no modifiers | USB-C Connector | 70 (HIGH) |
+| Weak sub (same region) + Field criticality | DRAM Samsung→SK Hynix (both Korea) | 55 (HIGH) |
+| Weak sub (same region) | NOR Flash (Taiwan→Taiwan) | 40 (MEDIUM) |
+| Weak sub (same manufacturer) | Voltage Reference (TI→TI) | 40 (MEDIUM) |
+| Strong sub (diff mfr + diff region) + Safety | IMU (Germany→Japan) | 25 (MEDIUM) |
+| Strong sub (diff mfr + diff region) | Ethernet PHY (Taiwan→USA) | 10 (LOW) |
+
+### Full Column Schema
 
 | Column | Description |
 |---|---|
@@ -273,13 +298,15 @@ The file `Project Docs/Sample BOM.xlsx` is a real BOM exported from Propel PLM f
 | `Manufacturer` | Manufacturer name |
 | `Manufacturer Part Number` | Manufacturer's MPN |
 | `Lifecycle Phase` | `ACTIVE`, `EOL` (End of Life), `LTB` (Last Time Buy), `NRND` (Not Recommended for New Designs) |
-| `Criticality Type` | `Function`, `NA`, or empty |
+| `Criticality Type` | `Field`, `Safety`, `Field & Safety`, `Function`, `NA`, or empty |
+| `Country of Origin` | Country where the component is manufactured |
+| `Lead Time (Days)` | Supplier lead time |
+| `MOQ` | Minimum Order Quantity |
+| `Multiple Source Status` | `Single` or `Multi` — sourcing team's assessment |
+| `Unique to Samsara` | `Yes` / `No` — no ecosystem alternatives exist |
 | `Reference Designators` | PCB reference designator(s) |
 | `Quantity` | Qty used in this BOM |
-| `Lead Time (Days)` | Supplier lead time |
 | `Vendor` / `Vendor Part#` | Sourcing vendor info |
-| `Multiple Source Status` | Multi-source flag (currently unpopulated in sample) |
-| `Is Secondary Source?` | Secondary source flag |
 | `Flag Risk Review` | Manual risk flag |
 
 ### Substitute Relationship Logic
@@ -292,7 +319,7 @@ Substitute row: 350-00-00353  (Is Substitute = True,  Substitute For = 350-00-03
                 ↑ this item IS the substitute FOR 350-00-03372
 ```
 
-Real examples from the dataset:
+Real examples from `Sample BOM.xlsx`:
 ```
 350-00-00353  →  substitute for  350-00-03372  (NMOS transistor, MCC → Diodes Inc.)
 350-00-03466  →  substitute for  355-00-00010  (32MHz crystal, TXC → Diodes Inc.)
@@ -311,5 +338,9 @@ Real examples from the dataset:
 
 1. **To find all substitutes for a component:** find rows where `Substitute For == component_item_number`
 2. **To detect single source:** primary component rows where no other row has `Substitute For == this item number`
-3. **Same-manufacturer substitute risk:** compare `Manufacturer` of primary vs substitute row
-4. **Lifecycle risk flags:** `EOL`, `LTB`, `NRND` are at-risk phases — add +15 to component score and count toward SKU lifecycle weight. `ACTIVE` = no risk.
+3. **Substitute quality — same manufacturer:** compare `Manufacturer` of primary vs substitute → MEDIUM if same
+4. **Substitute quality — same region:** compare `Country of Origin` of primary vs substitute → MEDIUM if same (only applied when both have known origin; unknown origin does not penalise)
+5. **Substitute viability:** substitutes with `Lifecycle Phase` in `EOL`, `LTB`, `NRND` are excluded from LOW classification; if ALL substitutes are at-risk, the primary is MEDIUM
+6. **Lifecycle risk flags:** `EOL`, `LTB`, `NRND` on the PRIMARY → add +15 to component score, count toward SKU lifecycle weight. `ACTIVE` = no risk.
+7. **Criticality amplification:** `Criticality Type` in `Field`, `Safety`, `Field & Safety` → add +15 to component score
+8. **Samsara-unique:** `Unique to Samsara = Yes` → add +10 to component score

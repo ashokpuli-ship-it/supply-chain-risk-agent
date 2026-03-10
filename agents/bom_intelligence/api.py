@@ -20,7 +20,7 @@ load_dotenv()
 
 _HERE = Path(__file__).parent
 _STATIC_DIR = _HERE / "static"
-_SAMPLE_BOM = _HERE.parent.parent / "project docs" / "Sample BOM.xlsx"
+_SAMPLE_BOM = _HERE.parent.parent / "Project Docs" / "Sample BOM.xlsx"
 
 _bom_cache: dict[str, BOMData] = {}
 _report_cache: dict[str, SKURiskReport] = {}
@@ -77,8 +77,12 @@ def _persist_to_db(bom: BOMData, report: SKURiskReport) -> None:
                 mpn=comp.mpn,
                 lifecycle_phase=comp.lifecycle_phase,
                 criticality_type=comp.criticality_type,
+                country_of_origin=comp.country_of_origin,
                 quantity=comp.quantity,
                 lead_time_days=comp.lead_time_days,
+                moq=comp.moq,
+                multiple_source_status=comp.multiple_source_status,
+                unique_to_samsara=comp.unique_to_samsara,
                 is_substitute=comp.is_substitute,
                 vendor=comp.vendor,
                 vendor_part=comp.vendor_part,
@@ -90,8 +94,10 @@ def _persist_to_db(bom: BOMData, report: SKURiskReport) -> None:
             total_components=report.total_components,
             single_source_count=report.single_source_count,
             components_with_substitutes=report.components_with_substitutes,
-            same_manufacturer_substitute_count=report.same_manufacturer_substitute_count,
-            development_lifecycle_count=report.development_lifecycle_count,
+            weak_substitute_count=report.weak_substitute_count,
+            at_risk_lifecycle_count=report.at_risk_lifecycle_count,
+            critical_parts_count=report.critical_parts_count,
+            unique_to_samsara_count=report.unique_to_samsara_count,
             risk_score=report.risk_score,
             risk_level=report.risk_level,
             top_risks=report.top_risks,
