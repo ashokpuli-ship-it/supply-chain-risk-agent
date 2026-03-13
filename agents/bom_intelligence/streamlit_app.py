@@ -150,15 +150,59 @@ def _build_comp_lookup(report: SKURiskReport) -> dict:
     return {c.item_number: c for c in report.component_risks}
 
 
-def _show_component_detail(comp, G: nx.DiGraph, key_suffix: str) -> None:
-    colour = _RISK_COLOURS.get(comp.substitute_risk.value, "#94a3b8")
-    with st.expander(
-        f"{comp.item_number} — {comp.description or 'No description'} "
-        f"| Risk: {comp.substitute_risk.value}  Score: {comp.risk_score}",
-        expanded=True,
-    ):
-        col_meta, col_risk = st.columns(2)
+def _show_component_detail(comp, G: nx.DiGraph, key_suffix: str, lc_comp=None, corr_signals=None) -> None:
+    """Combined per-component inspection report: structural + lifecycle agents."""
+    struct_level = comp.substitute_risk.value
+    lc_level = lc_comp.lifecycle_risk_level if lc_comp else None
+    lc_score_str = f"{lc_comp.lifecycle_risk_score:.0f}" if lc_comp else "—"
 
+    title = (
+        f"{comp.item_number} — {comp.description or 'No description'} "
+        f"| Structural: {struct_level}  {comp.risk_score}"
+        + (f" | Lifecycle: {lc_level}  {lc_score_str}" if lc_comp else "")
+    )
+    with st.expander(title, expanded=True):
+        # ── Score badges row ──────────────────────────────────────────────────
+        badge_cols = st.columns(2 if lc_comp else 1)
+        s_colour = _RISK_COLOURS.get(struct_level, "#94a3b8")
+        badge_cols[0].markdown(
+            f"<div style='text-align:center;padding:8px;border-radius:8px;"
+            f"background:#1e293b;border:1px solid #334155'>"
+            f"<div style='font-size:11px;color:#64748b;text-transform:uppercase;"
+            f"letter-spacing:.05em'>Structural Risk Score</div>"
+            f"<div style='font-size:32px;font-weight:700;color:{s_colour}'>{comp.risk_score}</div>"
+            f"<div style='font-size:12px;font-weight:600;color:{s_colour}'>{struct_level}</div>"
+            f"<div style='font-size:10px;color:#64748b'>BOM Intelligence Agent</div></div>",
+            unsafe_allow_html=True,
+        )
+        if lc_comp:
+            lc_colour = _RISK_COLOURS.get(lc_level, "#94a3b8")
+            badge_cols[1].markdown(
+                f"<div style='text-align:center;padding:8px;border-radius:8px;"
+                f"background:#1e293b;border:1px solid #334155'>"
+                f"<div style='font-size:11px;color:#64748b;text-transform:uppercase;"
+                f"letter-spacing:.05em'>Lifecycle Risk Score</div>"
+                f"<div style='font-size:32px;font-weight:700;color:{lc_colour}'>{lc_score_str}</div>"
+                f"<div style='font-size:12px;font-weight:600;color:{lc_colour}'>{lc_level}</div>"
+                f"<div style='font-size:10px;color:#64748b'>Lifecycle & Obsolescence Agent</div></div>",
+                unsafe_allow_html=True,
+            )
+
+        # Compound risk signals for this component
+        if corr_signals:
+            comp_name = (comp.description or "").lower()
+            relevant = [s for s in corr_signals
+                        if comp_name and comp_name in s.lower()
+                        or comp.item_number in s]
+            for sig in relevant:
+                st.warning(sig, icon="⚡")
+
+        st.markdown("")  # spacer
+
+        # ── 3-column detail ───────────────────────────────────────────────────
+        col_meta, col_struct, col_lc = st.columns(3)
+
+        # Column 1 — Component Details + Where Used
         with col_meta:
             st.markdown("**Component Details**")
             unique_str = ("Yes" if comp.unique_to_samsara else
@@ -186,8 +230,9 @@ def _show_component_detail(comp, G: nx.DiGraph, key_suffix: str) -> None:
             else:
                 st.caption("Not directly used as a primary component in any loaded SKU.")
 
-        with col_risk:
-            st.markdown("**Risk Drivers**")
+        # Column 2 — Structural Risk Drivers + Substitutes
+        with col_struct:
+            st.markdown("**Structural Risk Drivers**")
             if comp.risk_drivers:
                 for d in comp.risk_drivers:
                     st.markdown(f"› {d}")
@@ -221,6 +266,30 @@ def _show_component_detail(comp, G: nx.DiGraph, key_suffix: str) -> None:
                 st.dataframe(pd.DataFrame(sub_rows), hide_index=True, use_container_width=True)
             else:
                 st.caption("No substitutes listed.")
+
+        # Column 3 — Lifecycle & Obsolescence
+        with col_lc:
+            st.markdown("**Lifecycle & Obsolescence**")
+            if lc_comp:
+                yrs = f"{lc_comp.estimated_years_to_eol:.1f}" if lc_comp.estimated_years_to_eol is not None else "—"
+                dist = str(lc_comp.number_of_distributors) if lc_comp.number_of_distributors is not None else "—"
+                st.markdown(f"""
+| Field | Value |
+|---|---|
+| SE Lifecycle Stage | {lc_comp.lifecycle_stage or '—'} |
+| Estimated Years to EOL | {yrs} |
+| EOL Date | {lc_comp.estimated_eol_date or '—'} |
+| # Distributors | {dist} |
+| Counterfeit Risk | {lc_comp.counterfeit_risk or '—'} |
+""")
+                if lc_comp.risk_drivers:
+                    st.markdown("**Lifecycle Risk Drivers**")
+                    for d in lc_comp.risk_drivers:
+                        st.markdown(f"› {d}")
+                else:
+                    st.caption("No lifecycle risk drivers.")
+            else:
+                st.caption("No lifecycle data available for this component.")
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -257,6 +326,10 @@ else:
         icon="⚠️",
     )
     st.stop()
+
+# Fast lookup maps available across all tabs
+_struct_lookup: dict = {c.item_number: c for c in report.component_risks}
+_lc_lookup: dict = {c.item_number: c for c in lifecycle_report.component_risks}
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -448,7 +521,11 @@ with tab_bom:
             if sel_mpn != mpn_options[0]:
                 comp = comp_lookup.get(mpn_to_item[sel_mpn])
                 if comp:
-                    _show_component_detail(comp, G, key_suffix)
+                    _show_component_detail(
+                        comp, G, key_suffix,
+                        lc_comp=_lc_lookup.get(comp.item_number),
+                        corr_signals=composite_report.correlation_signals,
+                    )
 
     with tab_all:    _show_table(df,                             "all")
     with tab_high:   _show_table(df[df.Risk == "HIGH"].copy(),   "high")
@@ -554,3 +631,35 @@ with tab_lc:
         .format({"LC Score": "{:.1f}"})
     )
     st.dataframe(lc_styled_all, hide_index=True, use_container_width=True)
+
+    # ── Component Inspector (Lifecycle tab) ───────────────────────────────────
+    st.subheader("Component Inspector", divider="gray")
+    st.caption("Select a manufacturer and MPN to see the full combined risk report for that component.")
+
+    lc_mfrs = sorted(m for m in set(c.manufacturer or "—" for c in lc.component_risks) if m != "—")
+    lc_mfr_opts = ["— Select manufacturer —"] + lc_mfrs
+    sel_lc_mfr = st.selectbox(
+        "Manufacturer:", options=lc_mfr_opts,
+        key="lc_insp_mfr", label_visibility="collapsed",
+    )
+    if sel_lc_mfr != lc_mfr_opts[0]:
+        lc_mfr_comps = [c for c in lc.component_risks if c.manufacturer == sel_lc_mfr]
+        lc_mpn_display = [f"{c.mpn or '—'}  ({c.item_number})" for c in lc_mfr_comps]
+        lc_mpn_to_item = {f"{c.mpn or '—'}  ({c.item_number})": c.item_number for c in lc_mfr_comps}
+        lc_mpn_opts = ["— Select MPN —"] + lc_mpn_display
+        sel_lc_mpn = st.selectbox(
+            "MPN:", options=lc_mpn_opts,
+            key="lc_insp_mpn", label_visibility="collapsed",
+        )
+        if sel_lc_mpn != lc_mpn_opts[0]:
+            insp_item_id = lc_mpn_to_item[sel_lc_mpn]
+            struct_comp = _struct_lookup.get(insp_item_id)
+            lc_comp_data = _lc_lookup.get(insp_item_id)
+            if struct_comp:
+                _show_component_detail(
+                    struct_comp, G, "lc_insp",
+                    lc_comp=lc_comp_data,
+                    corr_signals=composite_report.correlation_signals,
+                )
+            elif lc_comp_data:
+                st.info("Structural risk data not available for this component.", icon="ℹ️")
