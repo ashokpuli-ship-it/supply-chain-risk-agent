@@ -19,6 +19,22 @@ class SubstituteRisk(str, Enum):
     LOW = "LOW"         # Substitute exists, different manufacturer AND different region
 
 
+class SiliconExpertData(BaseModel):
+    """SiliconExpert lifecycle intelligence fields per component."""
+    lifecycle_stage: Optional[str] = None           # ACTIVE | NRND | LTB | Obsolete
+    estimated_eol_date: Optional[str] = None        # "YYYY-MM-DD"
+    estimated_years_to_eol: Optional[float] = None
+    min_years_to_eol: Optional[float] = None
+    max_years_to_eol: Optional[float] = None
+    lifecycle_risk_grade: Optional[str] = None      # A | B | C | D | F
+    last_pcn_date: Optional[str] = None             # "YYYY-MM-DD"
+    number_of_distributors: Optional[int] = None
+    inventory_risk: Optional[str] = None            # Low | Medium | High
+    counterfeit_overall_risk: Optional[str] = None  # Low | Medium | High
+    multi_sourcing_risk: Optional[str] = None       # Low | Medium | High
+    overall_risk: Optional[str] = None              # Low | Medium | High
+
+
 class BOMComponent(BaseModel):
     level: int
     item_number: str
@@ -39,6 +55,8 @@ class BOMComponent(BaseModel):
     vendor: Optional[str] = None
     vendor_part: Optional[str] = None
     flag_risk_review: Optional[bool] = None
+    # SiliconExpert lifecycle fields (populated by bom_fetcher when SE columns present)
+    se_data: Optional[SiliconExpertData] = None
 
 
 class BOMData(BaseModel):
@@ -95,3 +113,62 @@ class SKURiskReport(BaseModel):
     risk_level: str                     # LOW | MEDIUM | HIGH | CRITICAL
     component_risks: list[ComponentRisk]
     top_risks: list[str]
+
+
+# ── Lifecycle & Obsolescence Agent output models ──────────────────────────────
+
+class LifecycleComponentRisk(BaseModel):
+    """Per-component lifecycle risk score from the Lifecycle & Obsolescence Agent."""
+    item_number: str
+    description: Optional[str] = None
+    manufacturer: Optional[str] = None
+    mpn: Optional[str] = None
+    lifecycle_stage: Optional[str] = None
+    estimated_years_to_eol: Optional[float] = None
+    estimated_eol_date: Optional[str] = None
+    number_of_distributors: Optional[int] = None
+    counterfeit_risk: Optional[str] = None
+    lifecycle_risk_score: float                     # 0–100
+    lifecycle_risk_level: str                       # LOW | MEDIUM | HIGH | CRITICAL
+    risk_drivers: list[str] = []
+
+
+class LifecycleRiskReport(BaseModel):
+    """SKU-level lifecycle risk summary."""
+    sku_id: str
+    description: str
+    total_components: int
+    obsolete_count: int                 # Lifecycle stage = Obsolete/EOL
+    nrnd_count: int                     # Lifecycle stage = NRND
+    ltb_count: int                      # Lifecycle stage = LTB
+    near_eol_count: int                 # estimated_years_to_eol < 2
+    low_distributor_count: int          # number_of_distributors < 2
+    high_counterfeit_count: int         # counterfeit_overall_risk = High
+    lifecycle_risk_score: float         # 0–100 (SKU-level weighted)
+    lifecycle_risk_level: str           # LOW | MEDIUM | HIGH | CRITICAL
+    component_risks: list[LifecycleComponentRisk]
+    top_lifecycle_risks: list[str]      # Narrative (e.g. "1 component is Obsolete")
+
+
+# ── Orchestrator output model ─────────────────────────────────────────────────
+
+class CompositeRiskReport(BaseModel):
+    """
+    Composite risk report from the Risk Orchestrator.
+
+    Phase 1 formula (2 of 3 agents active):
+        composite = 0.5625 × structural + 0.4375 × lifecycle
+    Weights normalised from spec (0.45 structural, 0.35 lifecycle, 0.20 supply).
+    Supply Agent weight (0.20) reintroduced once that agent is built.
+    """
+    sku_id: str
+    description: str
+    structural_risk_score: float        # From SKURiskReport
+    structural_risk_level: str
+    lifecycle_risk_score: float         # From LifecycleRiskReport
+    lifecycle_risk_level: str
+    composite_risk_score: float         # Weighted aggregate (0–100)
+    composite_risk_level: str           # LOW | MEDIUM | HIGH | CRITICAL
+    active_agents: list[str]            # e.g. ["bom_intelligence", "lifecycle"]
+    correlation_signals: list[str]      # Compound risk detections
+    top_risks: list[str]                # Merged executive narrative

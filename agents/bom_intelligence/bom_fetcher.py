@@ -6,7 +6,7 @@ from typing import Optional
 
 import openpyxl
 
-from models import BOMComponent, BOMData
+from models import BOMComponent, BOMData, SiliconExpertData
 
 # Maps Excel column headers to BOMComponent field names
 _EXCEL_COLUMNS = {
@@ -29,6 +29,61 @@ _EXCEL_COLUMNS = {
     "Vendor":                   "vendor",
     "Vendor Part#":             "vendor_part",
     "Flag Risk Review":         "flag_risk_review",
+}
+
+# SiliconExpert lifecycle column headers (present in Propel + SE integrated exports)
+_SE_COLUMNS = {
+    "LifecycleStage",
+    "EstimatedEOLDate",
+    "EstimatedYearsToEOL",
+    "MinEstimatedYearsToEOL",
+    "MaxEstimatedYearsToEOL",
+    "LifeCycleRiskGrade",
+    "LastPCNDate",
+    "NumberOfDistributors",
+    "InventoryRisk",
+    "CounterfeitOverallRisk",
+    "MultiSourcingRisk",
+    "OverallRisk",
+}
+
+# Fallback SE defaults when SE columns are absent (derived from Lifecycle Phase)
+_SE_FALLBACK: dict[str | None, dict] = {
+    "ACTIVE": {
+        "lifecycle_stage": "ACTIVE",
+        "estimated_years_to_eol": 7.0,
+        "number_of_distributors": 10,
+        "inventory_risk": "Low",
+        "counterfeit_overall_risk": "Low",
+    },
+    "NRND": {
+        "lifecycle_stage": "NRND",
+        "estimated_years_to_eol": 3.0,
+        "number_of_distributors": 5,
+        "inventory_risk": "Medium",
+        "counterfeit_overall_risk": "Low",
+    },
+    "LTB": {
+        "lifecycle_stage": "LTB",
+        "estimated_years_to_eol": 1.0,
+        "number_of_distributors": 3,
+        "inventory_risk": "High",
+        "counterfeit_overall_risk": "Medium",
+    },
+    "EOL": {
+        "lifecycle_stage": "Obsolete",
+        "estimated_years_to_eol": 0.0,
+        "number_of_distributors": 1,
+        "inventory_risk": "High",
+        "counterfeit_overall_risk": "High",
+    },
+    None: {
+        "lifecycle_stage": "ACTIVE",
+        "estimated_years_to_eol": 7.0,
+        "number_of_distributors": 10,
+        "inventory_risk": "Low",
+        "counterfeit_overall_risk": "Low",
+    },
 }
 
 
@@ -74,6 +129,10 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
     headers = [str(h).strip() if h is not None else "" for h in rows[0]]
     idx: dict[str, int] = {col: headers.index(col) for col in _EXCEL_COLUMNS if col in headers}
 
+    # Detect which SE columns are present in this workbook
+    se_idx: dict[str, int] = {col: headers.index(col) for col in _SE_COLUMNS if col in headers}
+    has_se_columns = bool(se_idx)
+
     sku: Optional[BOMComponent] = None
     components: list[BOMComponent] = []
 
@@ -96,6 +155,34 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
 
         level = int(raw_level) if raw_level is not None else 0
 
+        lifecycle_phase = _cell(row, idx, "Lifecycle Phase")
+
+        # Build SiliconExpertData — from SE columns if present, else derive from lifecycle_phase
+        if has_se_columns:
+            def _se(col: str):
+                i = se_idx.get(col)
+                v = row[i] if i is not None else None
+                return str(v).strip() if v not in (None, "None", "") else None
+
+            se_data = SiliconExpertData(
+                lifecycle_stage=_se("LifecycleStage"),
+                estimated_eol_date=_se("EstimatedEOLDate"),
+                estimated_years_to_eol=float(_se("EstimatedYearsToEOL")) if _se("EstimatedYearsToEOL") is not None else None,
+                min_years_to_eol=float(_se("MinEstimatedYearsToEOL")) if _se("MinEstimatedYearsToEOL") is not None else None,
+                max_years_to_eol=float(_se("MaxEstimatedYearsToEOL")) if _se("MaxEstimatedYearsToEOL") is not None else None,
+                lifecycle_risk_grade=_se("LifeCycleRiskGrade"),
+                last_pcn_date=_se("LastPCNDate"),
+                number_of_distributors=int(float(_se("NumberOfDistributors"))) if _se("NumberOfDistributors") is not None else None,
+                inventory_risk=_se("InventoryRisk"),
+                counterfeit_overall_risk=_se("CounterfeitOverallRisk"),
+                multi_sourcing_risk=_se("MultiSourcingRisk"),
+                overall_risk=_se("OverallRisk"),
+            )
+        else:
+            lp_key = str(lifecycle_phase).strip() if lifecycle_phase else None
+            defaults = _SE_FALLBACK.get(lp_key, _SE_FALLBACK[None])
+            se_data = SiliconExpertData(**defaults)
+
         component = BOMComponent(
             level=level,
             item_number=str(raw_item),
@@ -103,7 +190,7 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
             description=_cell(row, idx, "Description"),
             manufacturer=_cell(row, idx, "Manufacturer"),
             mpn=_cell(row, idx, "Manufacturer Part Number"),
-            lifecycle_phase=_cell(row, idx, "Lifecycle Phase"),
+            lifecycle_phase=lifecycle_phase,
             criticality_type=str(raw_crit) if raw_crit not in (None, "None") else None,
             country_of_origin=str(raw_coo).strip() if raw_coo not in (None, "None", "") else None,
             quantity=float(raw_qty) if raw_qty is not None else None,
@@ -116,6 +203,7 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
             vendor=_cell(row, idx, "Vendor"),
             vendor_part=_cell(row, idx, "Vendor Part#"),
             flag_risk_review=_parse_bool(raw_flag),
+            se_data=se_data,
         )
 
         if level == 0:

@@ -11,7 +11,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from bom_fetcher import fetch_from_excel
 from bom_graph_builder import build_graph, get_where_used
-from models import SKURiskReport
+from lifecycle_agent import compute_lifecycle_report
+from models import CompositeRiskReport, LifecycleRiskReport, SKURiskReport
+from orchestrator import compute_composite_report
 from risk_engine import compute_risk_report
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -41,23 +43,31 @@ _RISK_EMOJI = {
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner="Parsing BOM and computing risk…")
-def _load_from_bytes(file_bytes: bytes, filename: str) -> tuple[SKURiskReport, nx.DiGraph]:
+def _load_from_bytes(
+    file_bytes: bytes, filename: str
+) -> tuple[SKURiskReport, nx.DiGraph, LifecycleRiskReport, CompositeRiskReport]:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
     try:
         bom = fetch_from_excel(tmp_path)
         G = build_graph(bom)
-        return compute_risk_report(bom, G), G
+        structural = compute_risk_report(bom, G)
+        lifecycle = compute_lifecycle_report(bom)
+        composite = compute_composite_report(bom, structural, lifecycle)
+        return structural, G, lifecycle, composite
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
 
 @st.cache_data(show_spinner="Loading sample BOM…")
-def _load_sample() -> tuple[SKURiskReport, nx.DiGraph]:
+def _load_sample() -> tuple[SKURiskReport, nx.DiGraph, LifecycleRiskReport, CompositeRiskReport]:
     bom = fetch_from_excel(str(_SAMPLE_BOM))
     G = build_graph(bom)
-    return compute_risk_report(bom, G), G
+    structural = compute_risk_report(bom, G)
+    lifecycle = compute_lifecycle_report(bom)
+    composite = compute_composite_report(bom, structural, lifecycle)
+    return structural, G, lifecycle, composite
 
 
 # ── Plotly gauge ──────────────────────────────────────────────────────────────
@@ -238,9 +248,9 @@ with st.sidebar:
 report: SKURiskReport | None = None
 
 if uploaded:
-    report, G = _load_from_bytes(uploaded.read(), uploaded.name)
+    report, G, lifecycle_report, composite_report = _load_from_bytes(uploaded.read(), uploaded.name)
 elif _SAMPLE_BOM.exists():
-    report, G = _load_sample()
+    report, G, lifecycle_report, composite_report = _load_sample()
 else:
     st.warning(
         "No BOM file loaded. Upload a Propel BOM Excel export using the sidebar.",
@@ -250,25 +260,59 @@ else:
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
-level_emoji = _RISK_EMOJI.get(report.risk_level, "⚪")
-st.markdown(f"## {level_emoji} BOM Risk Report — `{report.sku_id}`")
+comp_emoji = _RISK_EMOJI.get(composite_report.composite_risk_level, "⚪")
+st.markdown(f"## {comp_emoji} BOM Risk Report — `{report.sku_id}`")
 st.caption(report.description)
 
+# ── Composite + agent gauges ──────────────────────────────────────────────────
+col_comp, col_struct, col_lc = st.columns(3, gap="large")
 
-# ── Summary row ───────────────────────────────────────────────────────────────
-col_gauge, col_stats = st.columns([1, 2.5], gap="large")
-
-with col_gauge:
-    st.plotly_chart(_gauge(report.risk_score, report.risk_level), use_container_width=True)
-    colour = _RISK_COLOURS[report.risk_level]
+with col_comp:
+    st.plotly_chart(_gauge(composite_report.composite_risk_score, composite_report.composite_risk_level), use_container_width=True)
+    c_colour = _RISK_COLOURS[composite_report.composite_risk_level]
     st.markdown(
         f"<div style='text-align:center;margin-top:-16px'>"
-        f"<span style='font-size:18px;font-weight:700;color:{colour}'>"
-        f"{report.risk_level} RISK</span></div>",
+        f"<span style='font-size:14px;font-weight:700;color:{c_colour}'>"
+        f"COMPOSITE — {composite_report.composite_risk_level}</span><br>"
+        f"<span style='font-size:11px;color:#64748b'>Phase 1 · 2 agents active</span></div>",
         unsafe_allow_html=True,
     )
 
-with col_stats:
+with col_struct:
+    st.plotly_chart(_gauge(report.risk_score, report.risk_level), use_container_width=True)
+    s_colour = _RISK_COLOURS[report.risk_level]
+    st.markdown(
+        f"<div style='text-align:center;margin-top:-16px'>"
+        f"<span style='font-size:14px;font-weight:700;color:{s_colour}'>"
+        f"STRUCTURAL — {report.risk_level}</span><br>"
+        f"<span style='font-size:11px;color:#64748b'>BOM Intelligence Agent</span></div>",
+        unsafe_allow_html=True,
+    )
+
+with col_lc:
+    st.plotly_chart(_gauge(lifecycle_report.lifecycle_risk_score, lifecycle_report.lifecycle_risk_level), use_container_width=True)
+    lc_colour = _RISK_COLOURS[lifecycle_report.lifecycle_risk_level]
+    st.markdown(
+        f"<div style='text-align:center;margin-top:-16px'>"
+        f"<span style='font-size:14px;font-weight:700;color:{lc_colour}'>"
+        f"LIFECYCLE — {lifecycle_report.lifecycle_risk_level}</span><br>"
+        f"<span style='font-size:11px;color:#64748b'>Lifecycle & Obsolescence Agent</span></div>",
+        unsafe_allow_html=True,
+    )
+
+# Correlation signals (if any)
+if composite_report.correlation_signals:
+    st.markdown("**⚠ Compound Risk Signals**")
+    for sig in composite_report.correlation_signals:
+        st.warning(sig, icon="⚠️")
+
+st.divider()
+
+# ── Tabbed views: BOM Risk | Lifecycle Risk ───────────────────────────────────
+tab_bom, tab_lc = st.tabs(["BOM Risk (Structural)", "Lifecycle & Obsolescence"])
+
+with tab_bom:
+    # ── Metric cards ──────────────────────────────────────────────────────────
     r1, r2, r3 = st.columns(3)
     r4, r5, r6 = st.columns(3)
 
@@ -286,134 +330,227 @@ with col_stats:
     r6.metric("Unique to Samsara",  report.unique_to_samsara_count,
               help="No ecosystem alternatives if discontinued")
 
+    # ── Category drill-down ───────────────────────────────────────────────────
+    _DRILL_CATS = [
+        ("Single Source",     report.single_source_count,         lambda c: c.substitute_risk.value == "HIGH"),
+        ("With Substitutes",  report.components_with_substitutes, lambda c: len(c.substitutes) > 0),
+        ("EOL / LTB / NRND",  report.at_risk_lifecycle_count,     lambda c: c.lifecycle_phase in {"EOL", "LTB", "NRND"}),
+        ("Critical Parts",    report.critical_parts_count,        lambda c: c.criticality_type in {"Field", "Safety", "Field & Safety"}),
+        ("Unique to Samsara", report.unique_to_samsara_count,     lambda c: c.unique_to_samsara is True),
+    ]
 
-# ── Category drill-down ──────────────────────────────────────────────────────
-_DRILL_CATS = [
-    ("Single Source",     report.single_source_count,         lambda c: c.substitute_risk.value == "HIGH"),
-    ("With Substitutes",  report.components_with_substitutes, lambda c: len(c.substitutes) > 0),
-    ("EOL / LTB / NRND",  report.at_risk_lifecycle_count,     lambda c: c.lifecycle_phase in {"EOL", "LTB", "NRND"}),
-    ("Critical Parts",    report.critical_parts_count,        lambda c: c.criticality_type in {"Field", "Safety", "Field & Safety"}),
-    ("Unique to Samsara", report.unique_to_samsara_count,     lambda c: c.unique_to_samsara is True),
-]
+    for _label, _count, _filter in _DRILL_CATS:
+        if _count == 0:
+            continue
+        with st.expander(f"{_label} — {_count} component{'s' if _count != 1 else ''}"):
+            _rows = [
+                {
+                    "Risk":         c.substitute_risk.value,
+                    "Score":        c.risk_score,
+                    "Item #":       c.item_number,
+                    "Description":  (c.description or "")[:60],
+                    "Manufacturer": c.manufacturer or "—",
+                    "MPN":          c.mpn or "—",
+                    "Lifecycle":    c.lifecycle_phase or "—",
+                }
+                for c in report.component_risks if _filter(c)
+            ]
+            _drill_styled = (
+                pd.DataFrame(_rows).style
+                .map(_colour_risk, subset=["Risk"])
+                .background_gradient(subset=["Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
+                .format({"Score": "{:.1f}"})
+            )
+            st.dataframe(_drill_styled, hide_index=True, use_container_width=True)
 
-for _label, _count, _filter in _DRILL_CATS:
-    if _count == 0:
-        continue
-    with st.expander(f"{_label} — {_count} component{'s' if _count != 1 else ''}"):
-        _rows = [
-            {
-                "Risk":         c.substitute_risk.value,
-                "Score":        c.risk_score,
-                "Item #":       c.item_number,
-                "Description":  (c.description or "")[:60],
-                "Manufacturer": c.manufacturer or "—",
-                "MPN":          c.mpn or "—",
-                "Lifecycle":    c.lifecycle_phase or "—",
-            }
-            for c in report.component_risks if _filter(c)
-        ]
-        _drill_styled = (
-            pd.DataFrame(_rows).style
+    # ── Top risk drivers ──────────────────────────────────────────────────────
+    st.subheader("Top Risk Drivers", divider="red")
+    for risk_msg in report.top_risks:
+        st.markdown(f"› {risk_msg}")
+
+    # ── Component table ───────────────────────────────────────────────────────
+    st.subheader("Components", divider="gray")
+
+    df = _to_df(report)
+
+    counts = {r: len(df[df.Risk == r]) for r in ["HIGH", "MEDIUM", "LOW"]}
+    tab_all, tab_high, tab_medium, tab_low = st.tabs([
+        f"All ({len(df)})",
+        f"HIGH ({counts['HIGH']})",
+        f"MEDIUM ({counts['MEDIUM']})",
+        f"LOW ({counts['LOW']})",
+    ])
+
+
+    def _show_table(data: pd.DataFrame, key_suffix: str) -> None:
+        comp_lookup = _build_comp_lookup(report)
+
+        st.download_button(
+            label="Export CSV",
+            data=data.to_csv(index=False).encode("utf-8"),
+            file_name=f"bom-risk-{key_suffix}.csv",
+            mime="text/csv",
+            key=f"csv_{key_suffix}",
+        )
+
+        search = st.text_input(
+            "Search", placeholder="Item # / description / manufacturer…",
+            key=f"search_{key_suffix}", label_visibility="collapsed",
+        )
+        if search:
+            mask = data.apply(lambda row: search.lower() in str(row).lower(), axis=1)
+            data = data[mask]
+
+        styled = (
+            data.style
             .map(_colour_risk, subset=["Risk"])
             .background_gradient(subset=["Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
             .format({"Score": "{:.1f}"})
+            .set_properties(subset=["Sub Item #", "Sub Mfr", "Sub MPN", "Sub Lifecycle"], **{"color": "#94a3b8"})
         )
-        st.dataframe(_drill_styled, hide_index=True, use_container_width=True)
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Score":         st.column_config.NumberColumn("Score", format="%.1f"),
+                "Description":   st.column_config.TextColumn("Description", width="large"),
+                "Criticality":   st.column_config.TextColumn("Criticality", width="small"),
+                "Origin":        st.column_config.TextColumn("Country of Origin", width="small"),
+                "Lead Time":     st.column_config.TextColumn("Lead Time (Days)", width="small"),
+                "MOQ":           st.column_config.TextColumn("MOQ", width="small"),
+                "Multi Source":  st.column_config.TextColumn("Multi Source Status", width="small"),
+                "Unique":        st.column_config.TextColumn("Unique to Samsara", width="small"),
+                "Sub Item #":    st.column_config.TextColumn("Sub Item #", width="medium"),
+                "Sub Mfr":       st.column_config.TextColumn("Sub Manufacturer", width="medium"),
+                "Sub MPN":       st.column_config.TextColumn("Sub MPN", width="medium"),
+                "Sub Lifecycle": st.column_config.TextColumn("Sub Lifecycle ⚠", width="medium"),
+                "Drivers":       st.column_config.TextColumn("Risk Drivers", width="large"),
+            },
+        )
+        st.caption(f"{len(data)} components shown")
+
+        mfrs = sorted(m for m in data["Manufacturer"].unique() if m != "—")
+        mfr_options = ["— Select manufacturer —"] + mfrs
+        sel_mfr = st.selectbox(
+            "Manufacturer:", options=mfr_options,
+            key=f"mfr_{key_suffix}", label_visibility="collapsed",
+        )
+        if sel_mfr != mfr_options[0]:
+            mfr_df = data[data["Manufacturer"] == sel_mfr]
+            mpn_display = [f"{row['MPN']}  ({row['Item #']})" for _, row in mfr_df.iterrows()]
+            mpn_to_item = {f"{row['MPN']}  ({row['Item #']})": row['Item #'] for _, row in mfr_df.iterrows()}
+            mpn_options = ["— Select MPN —"] + mpn_display
+            sel_mpn = st.selectbox(
+                "MPN:", options=mpn_options,
+                key=f"mpn_{key_suffix}", label_visibility="collapsed",
+            )
+            if sel_mpn != mpn_options[0]:
+                comp = comp_lookup.get(mpn_to_item[sel_mpn])
+                if comp:
+                    _show_component_detail(comp, G, key_suffix)
+
+    with tab_all:    _show_table(df,                             "all")
+    with tab_high:   _show_table(df[df.Risk == "HIGH"].copy(),   "high")
+    with tab_medium: _show_table(df[df.Risk == "MEDIUM"].copy(), "medium")
+    with tab_low:    _show_table(df[df.Risk == "LOW"].copy(),    "low")
 
 
-# ── Top risk drivers ──────────────────────────────────────────────────────────
-st.subheader("Top Risk Drivers", divider="red")
-for risk_msg in report.top_risks:
-    st.markdown(f"› {risk_msg}")
+# ── Lifecycle & Obsolescence tab ──────────────────────────────────────────────
+with tab_lc:
+    lc = lifecycle_report
+    lc_total = lc.total_components
 
+    # Metric cards
+    lc_c1, lc_c2, lc_c3 = st.columns(3)
+    lc_c4, lc_c5, lc_c6 = st.columns(3)
+    lc_c1.metric("Total Components", lc_total)
+    lc_c2.metric("Obsolete / EOL",   lc.obsolete_count,
+                 help="SE lifecycle_stage = Obsolete or EOL")
+    lc_c3.metric("LTB",              lc.ltb_count,
+                 help="Last Time Buy — end of production ordered")
+    lc_c4.metric("NRND",             lc.nrnd_count,
+                 help="Not Recommended for New Designs")
+    lc_c5.metric("Near EOL (< 2yr)", lc.near_eol_count,
+                 help="Estimated years to EOL < 2")
+    lc_c6.metric("Low Distributors", lc.low_distributor_count,
+                 help="Fewer than 2 distributors available")
 
-# ── Component table ───────────────────────────────────────────────────────────
-st.subheader("Components", divider="gray")
+    # Lifecycle category drill-downs
+    _LC_CATS = [
+        ("Obsolete / EOL",    lc.obsolete_count,         lambda c: (c.lifecycle_stage or "").lower() in ("obsolete", "eol")),
+        ("LTB",               lc.ltb_count,              lambda c: (c.lifecycle_stage or "").lower() == "ltb"),
+        ("NRND",              lc.nrnd_count,             lambda c: (c.lifecycle_stage or "").lower() == "nrnd"),
+        ("Near EOL (< 2yr)",  lc.near_eol_count,         lambda c: c.estimated_years_to_eol is not None and c.estimated_years_to_eol < 2),
+        ("Low Distributors",  lc.low_distributor_count,  lambda c: c.number_of_distributors is not None and c.number_of_distributors < 2),
+        ("High Counterfeit",  lc.high_counterfeit_count, lambda c: (c.counterfeit_risk or "").lower() == "high"),
+    ]
 
-df = _to_df(report)
+    for _lbl, _cnt, _flt in _LC_CATS:
+        if _cnt == 0:
+            continue
+        with st.expander(f"{_lbl} — {_cnt} component{'s' if _cnt != 1 else ''}"):
+            _lc_rows = [
+                {
+                    "LC Level":      c.lifecycle_risk_level,
+                    "LC Score":      c.lifecycle_risk_score,
+                    "Item #":        c.item_number,
+                    "Description":   (c.description or "")[:55],
+                    "Manufacturer":  c.manufacturer or "—",
+                    "MPN":           c.mpn or "—",
+                    "Stage":         c.lifecycle_stage or "—",
+                    "Yrs to EOL":    f"{c.estimated_years_to_eol:.1f}" if c.estimated_years_to_eol is not None else "—",
+                    "Distributors":  str(c.number_of_distributors) if c.number_of_distributors is not None else "—",
+                    "Counterfeit":   c.counterfeit_risk or "—",
+                }
+                for c in lc.component_risks if _flt(c)
+            ]
+            _lc_styled = (
+                pd.DataFrame(_lc_rows).style
+                .map(_colour_risk, subset=["LC Level"])
+                .background_gradient(subset=["LC Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
+                .format({"LC Score": "{:.1f}"})
+            )
+            st.dataframe(_lc_styled, hide_index=True, use_container_width=True)
 
-counts = {r: len(df[df.Risk == r]) for r in ["HIGH", "MEDIUM", "LOW"]}
-tab_all, tab_high, tab_medium, tab_low = st.tabs([
-    f"All ({len(df)})",
-    f"HIGH ({counts['HIGH']})",
-    f"MEDIUM ({counts['MEDIUM']})",
-    f"LOW ({counts['LOW']})",
-])
+    # Top lifecycle risk drivers
+    st.subheader("Lifecycle Risk Drivers", divider="orange")
+    for msg in lc.top_lifecycle_risks:
+        st.markdown(f"› {msg}")
 
+    # Full lifecycle component table
+    st.subheader("All Components — Lifecycle View", divider="gray")
+    lc_rows_all = [
+        {
+            "LC Level":      c.lifecycle_risk_level,
+            "LC Score":      c.lifecycle_risk_score,
+            "Item #":        c.item_number,
+            "Description":   (c.description or "")[:55],
+            "Manufacturer":  c.manufacturer or "—",
+            "MPN":           c.mpn or "—",
+            "Stage":         c.lifecycle_stage or "—",
+            "EOL Date":      c.estimated_eol_date or "—",
+            "Yrs to EOL":    f"{c.estimated_years_to_eol:.1f}" if c.estimated_years_to_eol is not None else "—",
+            "Distributors":  str(c.number_of_distributors) if c.number_of_distributors is not None else "—",
+            "Counterfeit":   c.counterfeit_risk or "—",
+            "Drivers":       "; ".join(c.risk_drivers[:2]),
+        }
+        for c in lc.component_risks
+    ]
+    lc_df = pd.DataFrame(lc_rows_all)
 
-def _show_table(data: pd.DataFrame, key_suffix: str, report: SKURiskReport, G: nx.DiGraph) -> None:
-    comp_lookup = _build_comp_lookup(report)
-
-    # Feature 4 — CSV export
     st.download_button(
-        label="Export CSV",
-        data=data.to_csv(index=False).encode("utf-8"),
-        file_name=f"bom-risk-{key_suffix}.csv",
+        label="Export Lifecycle CSV",
+        data=lc_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"lifecycle-risk-{lc.sku_id}.csv",
         mime="text/csv",
-        key=f"csv_{key_suffix}",
+        key="csv_lifecycle",
     )
 
-    search = st.text_input(
-        "Search", placeholder="Item # / description / manufacturer…",
-        key=f"search_{key_suffix}", label_visibility="collapsed",
+    lc_styled_all = (
+        lc_df.style
+        .map(_colour_risk, subset=["LC Level"])
+        .background_gradient(subset=["LC Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
+        .format({"LC Score": "{:.1f}"})
     )
-    if search:
-        mask = data.apply(lambda row: search.lower() in str(row).lower(), axis=1)
-        data = data[mask]
-
-    # Feature 3 — sortable columns: built into st.dataframe by default
-    styled = (
-        data.style
-        .map(_colour_risk, subset=["Risk"])
-        .background_gradient(subset=["Score"], cmap="RdYlGn_r", vmin=0, vmax=100)
-        .format({"Score": "{:.1f}"})
-        .set_properties(subset=["Sub Item #", "Sub Mfr", "Sub MPN", "Sub Lifecycle"], **{"color": "#94a3b8"})
-    )
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Score":        st.column_config.NumberColumn("Score", format="%.1f"),
-            "Description":  st.column_config.TextColumn("Description", width="large"),
-            "Criticality":  st.column_config.TextColumn("Criticality", width="small"),
-            "Origin":       st.column_config.TextColumn("Country of Origin", width="small"),
-            "Lead Time":    st.column_config.TextColumn("Lead Time (Days)", width="small"),
-            "MOQ":          st.column_config.TextColumn("MOQ", width="small"),
-            "Multi Source": st.column_config.TextColumn("Multi Source Status", width="small"),
-            "Unique":       st.column_config.TextColumn("Unique to Samsara", width="small"),
-            "Sub Item #":    st.column_config.TextColumn("Sub Item #", width="medium"),
-            "Sub Mfr":       st.column_config.TextColumn("Sub Manufacturer", width="medium"),
-            "Sub MPN":       st.column_config.TextColumn("Sub MPN", width="medium"),
-            "Sub Lifecycle": st.column_config.TextColumn("Sub Lifecycle ⚠", width="medium"),
-            "Drivers":      st.column_config.TextColumn("Risk Drivers", width="large"),
-        },
-    )
-    st.caption(f"{len(data)} components shown")
-
-    # Features 1 + 2 — two-step: Manufacturer → MPN → component detail
-    mfrs = sorted(m for m in data["Manufacturer"].unique() if m != "—")
-    mfr_options = ["— Select manufacturer —"] + mfrs
-    sel_mfr = st.selectbox(
-        "Manufacturer:", options=mfr_options,
-        key=f"mfr_{key_suffix}", label_visibility="collapsed",
-    )
-    if sel_mfr != mfr_options[0]:
-        mfr_df = data[data["Manufacturer"] == sel_mfr]
-        mpn_display = [f"{row['MPN']}  ({row['Item #']})" for _, row in mfr_df.iterrows()]
-        mpn_to_item = {f"{row['MPN']}  ({row['Item #']})": row['Item #'] for _, row in mfr_df.iterrows()}
-        mpn_options = ["— Select MPN —"] + mpn_display
-        sel_mpn = st.selectbox(
-            "MPN:", options=mpn_options,
-            key=f"mpn_{key_suffix}", label_visibility="collapsed",
-        )
-        if sel_mpn != mpn_options[0]:
-            comp = comp_lookup.get(mpn_to_item[sel_mpn])
-            if comp:
-                _show_component_detail(comp, G, key_suffix)
-
-
-with tab_all:    _show_table(df,                             "all",    report, G)
-with tab_high:   _show_table(df[df.Risk == "HIGH"].copy(),   "high",   report, G)
-with tab_medium: _show_table(df[df.Risk == "MEDIUM"].copy(), "medium", report, G)
-with tab_low:    _show_table(df[df.Risk == "LOW"].copy(),    "low",    report, G)
+    st.dataframe(lc_styled_all, hide_index=True, use_container_width=True)

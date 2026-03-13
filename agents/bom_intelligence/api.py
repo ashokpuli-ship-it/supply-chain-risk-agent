@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from bom_fetcher import fetch_from_excel
 from bom_graph_builder import build_graph, get_where_used
 from database import DBComponent, DBRiskScore, get_session, init_db
-from models import BOMData, SKURiskReport
+from lifecycle_agent import compute_lifecycle_report
+from models import BOMData, CompositeRiskReport, LifecycleRiskReport, SKURiskReport
+from orchestrator import compute_composite_report
 from risk_engine import compute_risk_report
 
 load_dotenv()
@@ -26,6 +28,8 @@ _SAMPLE_BOM = _HERE.parent.parent / "Project Docs" / "Sample BOM.xlsx"
 _bom_cache: dict[str, BOMData] = {}
 _graph_cache: dict[str, nx.DiGraph] = {}
 _report_cache: dict[str, SKURiskReport] = {}
+_lifecycle_cache: dict[str, LifecycleRiskReport] = {}
+_composite_cache: dict[str, CompositeRiskReport] = {}
 
 
 @asynccontextmanager
@@ -58,9 +62,13 @@ def _load_and_cache(filepath: str) -> SKURiskReport:
     bom = fetch_from_excel(filepath)
     G = build_graph(bom)
     report = compute_risk_report(bom, G)
+    lifecycle_report = compute_lifecycle_report(bom)
+    composite_report = compute_composite_report(bom, report, lifecycle_report)
     _bom_cache[bom.sku_id] = bom
     _graph_cache[bom.sku_id] = G
     _report_cache[bom.sku_id] = report
+    _lifecycle_cache[bom.sku_id] = lifecycle_report
+    _composite_cache[bom.sku_id] = composite_report
     _persist_to_db(bom, report)
     return report
 
@@ -205,6 +213,67 @@ async def where_used(item_id: str):
         raise HTTPException(status_code=404,
                             detail=f"Item '{item_id}' not found in any loaded BOM.")
     return results
+
+
+@app.get("/risk/sku/{sku_id}/lifecycle", response_model=LifecycleRiskReport,
+         summary="Lifecycle & Obsolescence risk report for a SKU")
+async def get_lifecycle_risk(sku_id: str):
+    report = _lifecycle_cache.get(sku_id)
+    if not report:
+        raise HTTPException(status_code=404,
+                            detail=f"SKU '{sku_id}' not loaded. POST /bom/load first.")
+    return report
+
+
+@app.get("/risk/sku/{sku_id}/composite", response_model=CompositeRiskReport,
+         summary="Composite risk report (BOM Intelligence + Lifecycle) for a SKU")
+async def get_composite_risk(sku_id: str):
+    report = _composite_cache.get(sku_id)
+    if not report:
+        raise HTTPException(status_code=404,
+                            detail=f"SKU '{sku_id}' not loaded. POST /bom/load first.")
+    return report
+
+
+@app.get("/risk/components/eol",
+         summary="Components near EOL or Obsolete across loaded SKUs")
+async def get_eol_components(
+    sku_id: Optional[str] = Query(default=None, description="Filter by SKU"),
+    years_threshold: float = Query(default=2.0, description="Include components with years_to_eol ≤ this value or Obsolete"),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    if sku_id:
+        if sku_id not in _lifecycle_cache:
+            raise HTTPException(status_code=404, detail=f"SKU '{sku_id}' not found")
+        reports = [_lifecycle_cache[sku_id]]
+        sku_ids = [sku_id]
+    else:
+        reports = list(_lifecycle_cache.values())
+        sku_ids = list(_lifecycle_cache.keys())
+
+    results = []
+    for sid, report in zip(sku_ids, reports):
+        for comp in report.component_risks:
+            stage = (comp.lifecycle_stage or "").strip().lower()
+            yrs = comp.estimated_years_to_eol
+            is_eol = stage in ("obsolete", "eol") or (yrs is not None and yrs <= years_threshold)
+            if is_eol:
+                results.append({
+                    "sku_id": sid,
+                    "item_number": comp.item_number,
+                    "description": comp.description,
+                    "manufacturer": comp.manufacturer,
+                    "mpn": comp.mpn,
+                    "lifecycle_stage": comp.lifecycle_stage,
+                    "estimated_years_to_eol": comp.estimated_years_to_eol,
+                    "estimated_eol_date": comp.estimated_eol_date,
+                    "number_of_distributors": comp.number_of_distributors,
+                    "lifecycle_risk_score": comp.lifecycle_risk_score,
+                    "lifecycle_risk_level": comp.lifecycle_risk_level,
+                })
+
+    results.sort(key=lambda x: (x["estimated_years_to_eol"] or 999))
+    return results[:limit]
 
 
 @app.get("/health", include_in_schema=False)

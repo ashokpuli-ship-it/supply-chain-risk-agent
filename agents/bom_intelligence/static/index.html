@@ -79,7 +79,7 @@
     <!-- Top row: gauge + stat cards -->
     <div class="flex flex-col lg:flex-row gap-4">
 
-      <!-- Gauge -->
+      <!-- Gauge (Structural) + Composite score below -->
       <div class="card p-6 flex flex-col items-center justify-center min-w-[200px]">
         <svg width="160" height="95" viewBox="0 0 160 95">
           <path class="gauge-track" d="M 18 88 A 68 68 0 0 1 142 88" />
@@ -87,12 +87,18 @@
                 stroke="#6366f1" stroke-dasharray="213" stroke-dashoffset="213" />
         </svg>
         <div id="gauge-score" class="text-4xl font-bold text-white -mt-3">—</div>
-        <div class="text-slate-400 text-xs mt-0.5">Risk Score (0–100)</div>
+        <div class="text-slate-400 text-xs mt-0.5">Structural Risk (0–100)</div>
         <div id="gauge-level" class="tag mt-2 risk-badge-LOW">—</div>
+        <!-- Composite score badge -->
+        <div class="mt-3 pt-3 border-t border-slate-700 w-full text-center">
+          <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">Composite Score</div>
+          <div id="composite-score" class="text-2xl font-bold text-white">—</div>
+          <div id="composite-level" class="tag mt-1 risk-badge-LOW">—</div>
+        </div>
       </div>
 
       <!-- Stat cards -->
-      <div class="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="flex-1 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
         <div class="card p-4">
           <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">Total Components</div>
           <div id="stat-total" class="text-3xl font-bold text-white">—</div>
@@ -111,7 +117,20 @@
           <div id="stat-lifecycle" class="text-3xl font-bold text-yellow-400">—</div>
           <div class="text-slate-500 text-xs mt-0.5">at-risk lifecycle</div>
         </div>
+        <div class="card p-4">
+          <div class="text-slate-400 text-xs uppercase tracking-wide mb-1">Lifecycle Score</div>
+          <div id="stat-lc-score" class="text-3xl font-bold text-white">—</div>
+          <div id="stat-lc-level" class="tag mt-1 risk-badge-LOW">—</div>
+        </div>
       </div>
+    </div>
+
+    <!-- Compound risk correlation signals (hidden when none) -->
+    <div id="correlation-panel" class="card p-4 hidden" style="border-color:#713f12">
+      <h2 class="text-white font-semibold text-sm mb-3 flex items-center gap-2">
+        <span class="text-yellow-400">⚡</span> Compound Risk Signals
+      </h2>
+      <ul id="correlation-signals" class="space-y-1.5 text-sm text-slate-300"></ul>
     </div>
 
     <!-- Top risks panel -->
@@ -150,13 +169,16 @@
           <thead>
             <tr class="text-slate-400 text-xs uppercase tracking-wide">
               <th class="px-4 py-3 text-left">Item #</th>
-              <th id="th-description"   class="px-4 py-3 text-left sortable"  onclick="sortBy('description')">Description<span class="sort-indicator" id="si-description"></span></th>
-              <th id="th-manufacturer"  class="px-4 py-3 text-left sortable"  onclick="sortBy('manufacturer')">Manufacturer<span class="sort-indicator" id="si-manufacturer"></span></th>
+              <th id="th-description"      class="px-4 py-3 text-left sortable"  onclick="sortBy('description')">Description<span class="sort-indicator" id="si-description"></span></th>
+              <th id="th-manufacturer"     class="px-4 py-3 text-left sortable"  onclick="sortBy('manufacturer')">Manufacturer<span class="sort-indicator" id="si-manufacturer"></span></th>
               <th class="px-4 py-3 text-left">MPN</th>
               <th class="px-4 py-3 text-left">Risk</th>
-              <th id="th-risk_score"    class="px-4 py-3 text-right sortable" onclick="sortBy('risk_score')">Score<span class="sort-indicator" id="si-risk_score"></span></th>
+              <th id="th-risk_score"       class="px-4 py-3 text-right sortable" onclick="sortBy('risk_score')">Score<span class="sort-indicator" id="si-risk_score"></span></th>
               <th class="px-4 py-3 text-left">Alternates</th>
-              <th id="th-lifecycle_phase" class="px-4 py-3 text-left sortable" onclick="sortBy('lifecycle_phase')">Lifecycle<span class="sort-indicator" id="si-lifecycle_phase"></span></th>
+              <th class="px-4 py-3 text-left">LC Stage</th>
+              <th id="th-lc_years_to_eol"  class="px-4 py-3 text-right sortable" onclick="sortBy('lc_years_to_eol')">Yrs EOL<span class="sort-indicator" id="si-lc_years_to_eol"></span></th>
+              <th class="px-4 py-3 text-right">Dist.</th>
+              <th id="th-lc_score"         class="px-4 py-3 text-right sortable" onclick="sortBy('lc_score')">LC Score<span class="sort-indicator" id="si-lc_score"></span></th>
             </tr>
           </thead>
           <tbody id="component-tbody" class="divide-y divide-slate-800"></tbody>
@@ -186,13 +208,15 @@
 <script>
   // ── State ────────────────────────────────────────────────────────────────────
   let allComponents = [];
+  let lifecycleMap  = {};   // item_number → LifecycleComponentRisk
+  let compositeData = null; // CompositeRiskReport
   let activeFilter  = 'ALL';
   const GAUGE_ARC   = 213;
   let sortState     = { col: null, dir: 'asc' };
   const expandedRows = new Set();   // item_numbers currently expanded
 
   const riskColour = { CRITICAL:'#ef4444', HIGH:'#f97316', MEDIUM:'#f59e0b', LOW:'#22c55e' };
-  const SORT_COLS  = ['description', 'manufacturer', 'risk_score', 'lifecycle_phase'];
+  const SORT_COLS  = ['description', 'manufacturer', 'risk_score', 'lc_years_to_eol', 'lc_score'];
 
   // ── Utilities ────────────────────────────────────────────────────────────────
   function setStatus(ok, text) {
@@ -232,8 +256,17 @@
     sortState = { col: null, dir: 'asc' };
     SORT_COLS.forEach(c => { const el = document.getElementById('si-'+c); if (el) el.textContent = ''; });
     try {
-      const r = await fetch('/risk/sku/'+skuId).then(res => res.json());
-      renderReport(r);
+      const [r, lc, comp] = await Promise.all([
+        fetch('/risk/sku/'+skuId).then(res => res.json()),
+        fetch('/risk/sku/'+skuId+'/lifecycle').then(res => res.ok ? res.json() : null).catch(() => null),
+        fetch('/risk/sku/'+skuId+'/composite').then(res => res.ok ? res.json() : null).catch(() => null),
+      ]);
+      lifecycleMap = {};
+      if (lc && lc.component_risks) {
+        lc.component_risks.forEach(c => { lifecycleMap[c.item_number] = c; });
+      }
+      compositeData = comp;
+      renderReport(r, comp);
       setStatus(true, 'Loaded: '+skuId);
     } catch(e) {
       document.getElementById('error-msg').textContent = 'Failed to load SKU '+skuId;
@@ -248,10 +281,20 @@
   }
 
   // ── Render report ────────────────────────────────────────────────────────────
-  function renderReport(report) {
-    allComponents = report.component_risks;
-    const total = report.total_components;
+  function renderReport(report, comp) {
+    // Enrich components with lifecycle data for sorting/export
+    allComponents = report.component_risks.map(c => {
+      const lc = lifecycleMap[c.item_number] || {};
+      return Object.assign({}, c, {
+        lc_stage:        lc.lifecycle_stage          ?? null,
+        lc_years_to_eol: lc.estimated_years_to_eol   ?? null,
+        lc_distributors: lc.number_of_distributors   ?? null,
+        lc_score:        lc.lifecycle_risk_score      ?? null,
+        lc_level:        lc.lifecycle_risk_level      ?? null,
+      });
+    });
 
+    const total = report.total_components;
     document.getElementById('stat-total').textContent  = total;
     document.getElementById('stat-single').textContent = report.single_source_count;
     document.getElementById('stat-single-pct').textContent =
@@ -259,7 +302,7 @@
     document.getElementById('stat-subs').textContent = report.components_with_substitutes;
     document.getElementById('stat-lifecycle').textContent = report.at_risk_lifecycle_count;
 
-    // Gauge
+    // Structural gauge
     const score = report.risk_score;
     const colour = riskColour[report.risk_level] || '#6366f1';
     document.getElementById('gauge-fill').style.strokeDashoffset = GAUGE_ARC - (score/100)*GAUGE_ARC;
@@ -268,6 +311,31 @@
     const lvlEl = document.getElementById('gauge-level');
     lvlEl.textContent = report.risk_level;
     lvlEl.className = 'tag mt-2 risk-badge-'+report.risk_level;
+
+    // Composite + lifecycle scores
+    if (comp) {
+      const cscore = comp.composite_risk_score;
+      const clevel = comp.composite_risk_level;
+      document.getElementById('composite-score').textContent = cscore.toFixed(1);
+      const cel = document.getElementById('composite-level');
+      cel.textContent = clevel;
+      cel.className = 'tag risk-badge-'+clevel;
+
+      const lscore = comp.lifecycle_risk_score;
+      const llevel = comp.lifecycle_risk_level;
+      document.getElementById('stat-lc-score').textContent = lscore.toFixed(1);
+      const lel = document.getElementById('stat-lc-level');
+      lel.textContent = llevel;
+      lel.className = 'tag risk-badge-'+llevel;
+
+      // Correlation signals
+      const signals = comp.correlation_signals || [];
+      const panel = document.getElementById('correlation-panel');
+      document.getElementById('correlation-signals').innerHTML = signals.map(s =>
+        '<li class="flex gap-2 items-start"><span class="text-yellow-400 mt-0.5 shrink-0">⚡</span><span>'+esc(s)+'</span></li>'
+      ).join('');
+      signals.length ? panel.classList.remove('hidden') : panel.classList.add('hidden');
+    }
 
     // Top risks
     document.getElementById('top-risks').innerHTML = report.top_risks.map(r =>
@@ -364,7 +432,7 @@
     const unique = c.unique_to_samsara === true ? 'Yes' : (c.unique_to_samsara === false ? 'No' : '—');
     const wuId = 'wu-' + c.item_number.replace(/[^a-zA-Z0-9]/g, '-');
 
-    return '<tr class="detail-row"><td colspan="8" class="px-6 py-4">'
+    return '<tr class="detail-row"><td colspan="11" class="px-6 py-4">'
       + '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">'
 
       // Left — metadata + where-used
@@ -433,7 +501,18 @@
       const subTag = subCount
         ? '<span class="tag" style="background:#1e3a5f;color:#93c5fd;border:1px solid #1d4ed8">'+subCount+' sub'+(subCount>1?'s':'')+'</span>'
         : '<span class="tag" style="background:#1c1917;color:#78716c;border:1px solid #44403c">none</span>';
-      const lcCls = c.lifecycle_phase === 'Development' ? 'text-yellow-400' : 'text-slate-400';
+
+      // Lifecycle columns from merged SE data
+      const lcStage = c.lc_stage || c.lifecycle_phase || '—';
+      const lcStageKey = (c.lc_stage || '').toLowerCase();
+      const lcStageCls = lcStageKey === 'obsolete' || lcStageKey === 'eol' ? 'text-red-400'
+                       : lcStageKey === 'ltb'    ? 'text-orange-400'
+                       : lcStageKey === 'nrnd'   ? 'text-yellow-400'
+                       : 'text-slate-400';
+      const lcYrs  = c.lc_years_to_eol != null ? c.lc_years_to_eol.toFixed(1) : '—';
+      const lcDist = c.lc_distributors  != null ? c.lc_distributors : '—';
+      const lcScoreVal = c.lc_score     != null ? c.lc_score.toFixed(0) : '—';
+      const lcScoreCol = c.lc_level ? (riskColour[c.lc_level] || '#94a3b8') : '#64748b';
 
       // Feature 1: clickable row + optional detail row below
       const row = '<tr class="row-'+risk+'" style="cursor:pointer" onclick="toggleRow(\''+c.item_number.replace(/'/g,"\\'")+'\' )">'
@@ -444,7 +523,10 @@
         +'<td class="px-4 py-2.5"><span class="tag risk-badge-'+risk+'">'+risk+'</span></td>'
         +'<td class="px-4 py-2.5 text-right font-semibold" style="color:'+(riskColour[risk]||'#94a3b8')+'">'+c.risk_score+'</td>'
         +'<td class="px-4 py-2.5">'+subTag+'</td>'
-        +'<td class="px-4 py-2.5 text-xs '+lcCls+'">'+esc(c.lifecycle_phase||'—')+'</td>'
+        +'<td class="px-4 py-2.5 text-xs '+lcStageCls+'">'+esc(lcStage)+'</td>'
+        +'<td class="px-4 py-2.5 text-right text-xs text-slate-400">'+lcYrs+'</td>'
+        +'<td class="px-4 py-2.5 text-right text-xs text-slate-400">'+lcDist+'</td>'
+        +'<td class="px-4 py-2.5 text-right text-xs font-semibold" style="color:'+lcScoreCol+'">'+lcScoreVal+'</td>'
         +'</tr>';
 
       const detail = expandedRows.has(c.item_number) ? renderDetailRow(c) : '';
@@ -475,12 +557,13 @@
       });
     }
 
-    const headers = ['Item #','Description','Manufacturer','MPN','Risk','Score','Lifecycle','Criticality','Origin','Lead Time','MOQ','Unique','Alternates'];
+    const headers = ['Item #','Description','Manufacturer','MPN','Risk','Score','Lifecycle','LC Stage','Yrs to EOL','Distributors','LC Score','Criticality','Origin','Lead Time','MOQ','Unique','Alternates'];
     const csvEsc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
     const rows = data.map(c => [
       c.item_number, c.description||'', c.manufacturer||'', c.mpn||'',
-      c.substitute_risk, c.risk_score, c.lifecycle_phase||'', c.criticality_type||'',
-      c.country_of_origin||'', c.lead_time_days||'', c.moq||'',
+      c.substitute_risk, c.risk_score, c.lifecycle_phase||'',
+      c.lc_stage||'', c.lc_years_to_eol??'', c.lc_distributors??'', c.lc_score??'',
+      c.criticality_type||'', c.country_of_origin||'', c.lead_time_days||'', c.moq||'',
       c.unique_to_samsara === true ? 'Yes' : (c.unique_to_samsara === false ? 'No' : ''),
       (c.substitutes||[]).length,
     ].map(csvEsc).join(','));

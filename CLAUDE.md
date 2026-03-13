@@ -45,7 +45,7 @@ curl -X POST "http://localhost:8000/bom/load?filepath=/abs/path/to/BOM.xlsx"
 ```bash
 cd agents/bom_intelligence
 .venv/bin/pip install pytest   # not in requirements.txt — install once
-.venv/bin/pytest test_risk_engine.py -v
+.venv/bin/pytest test_risk_engine.py test_lifecycle_agent.py -v
 .venv/bin/pytest test_risk_engine.py -v -k "test_single_source"  # run one test by name
 ```
 
@@ -58,19 +58,23 @@ lsof -ti :8000 | xargs kill -9
 
 ## Current Code Structure
 
-The only built module is the **BOM Intelligence Agent** at `agents/bom_intelligence/`:
+Phase 1 agents are built at `agents/bom_intelligence/`:
 
 | File | Role |
 |---|---|
-| `models.py` | Pydantic data models: `BOMComponent`, `BOMData`, `SubstituteInfo`, `ComponentRisk`, `SKURiskReport` |
-| `bom_fetcher.py` | Parses Propel Excel exports → `BOMData`; contains `PropelAPIClient` stub |
+| `models.py` | Pydantic data models: `BOMComponent` (+ `se_data`), `BOMData`, `SubstituteInfo`, `ComponentRisk`, `SKURiskReport`, `SiliconExpertData`, `LifecycleComponentRisk`, `LifecycleRiskReport`, `CompositeRiskReport` |
+| `bom_fetcher.py` | Parses Propel Excel exports → `BOMData`; reads SE lifecycle columns when present; derives conservative SE defaults from `lifecycle_phase` for older exports |
 | `bom_graph_builder.py` | Builds NetworkX `DiGraph` with `USES` and `SUBSTITUTE` edges |
 | `substitute_analyzer.py` | Classifies each primary component's substitute risk (HIGH/MEDIUM/LOW) using manufacturer + region + lifecycle viability |
 | `risk_engine.py` | Aggregates component risks into `SKURiskReport` with weighted SKU score (0–100) |
+| `lifecycle_agent.py` | Lifecycle & Obsolescence Agent: scores each component's lifecycle risk using SE fields; computes `LifecycleRiskReport` with SKU-level weighted score |
+| `orchestrator.py` | Risk Orchestrator: combines structural + lifecycle scores into `CompositeRiskReport` (Phase 1 formula: 0.5625×structural + 0.4375×lifecycle); detects compound risk signals |
 | `database.py` | SQLAlchemy ORM (`DBComponent`, `DBRiskScore`); gracefully degrades if no DB |
-| `api.py` | FastAPI app; serves endpoints + static `index.html`; holds in-memory BOM/report/graph cache (`_bom_cache`, `_report_cache`, `_graph_cache`) |
-| `streamlit_app.py` | Streamlit visual dashboard: SKU gauge, metric cards with clickable drill-down expanders, two-step Manufacturer→MPN component inspector with full substitute detail (8-column table with Viable/Same Mfr/Same Region indicators), where-used, and per-tab CSV export |
-| `static/index.html` | Vanilla JS static dashboard: sortable columns, expandable component rows with inline detail panel (metadata, where-used fetch, risk drivers, substitute table), and CSV export |
+| `api.py` | FastAPI app; serves endpoints + static `index.html`; holds in-memory caches for BOM, structural, lifecycle, and composite reports |
+| `streamlit_app.py` | Streamlit visual dashboard: 3-gauge header (composite/structural/lifecycle), correlation signals, BOM Risk and Lifecycle & Obsolescence tabs with drill-down expanders, component inspector, and CSV export |
+| `static/index.html` | Vanilla JS static dashboard: composite score badge in gauge card, lifecycle columns (LC Stage/Yrs EOL/Dist./LC Score), sortable by lifecycle score, expandable rows with detail panel, CSV export |
+| `test_risk_engine.py` | pytest suite — 20 scenarios covering all 5 structural risk factors |
+| `test_lifecycle_agent.py` | pytest suite — 29 scenarios covering lifecycle scoring, SKU aggregation, SE fallback derivation, and orchestrator correlation signals |
 
 **Phase 1 → Phase 2 migration notes (in-code TODOs):**
 - `bom_graph_builder.py`: Replace NetworkX with Neo4j for multi-level BOMs and cross-SKU where-used
@@ -102,7 +106,7 @@ Database Layer
   - Vector DB
 ```
 
-> **Phase 1 dashboard note:** `static/index.html` is vanilla JS (SVG gauge, live search, risk filters). `streamlit_app.py` is an alternative Plotly-based visual dashboard. React frontend is planned for Phase 2.
+> **Phase 1 dashboard note:** `static/index.html` is vanilla JS (SVG gauge, live search, risk filters). `streamlit_app.py` is an alternative Streamlit dashboard (Plotly gauge, drill-down expanders, component inspector). React frontend is planned for Phase 2.
 
 ## Planned Agents
 
