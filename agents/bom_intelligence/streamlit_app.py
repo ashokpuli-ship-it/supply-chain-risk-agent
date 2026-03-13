@@ -381,8 +381,10 @@ if composite_report.correlation_signals:
 
 st.divider()
 
-# ── Tabbed views: BOM Risk | Lifecycle Risk ───────────────────────────────────
-tab_bom, tab_lc = st.tabs(["BOM Risk (Structural)", "Lifecycle & Obsolescence"])
+# ── Tabbed views: BOM Risk | Lifecycle Risk | Orchestrator ───────────────────
+tab_bom, tab_lc, tab_orch = st.tabs([
+    "BOM Risk (Structural)", "Lifecycle & Obsolescence", "Orchestrator",
+])
 
 with tab_bom:
     # ── Metric cards ──────────────────────────────────────────────────────────
@@ -663,3 +665,183 @@ with tab_lc:
                 )
             elif lc_comp_data:
                 st.info("Structural risk data not available for this component.", icon="ℹ️")
+
+
+# ── Orchestrator tab ──────────────────────────────────────────────────────────
+with tab_orch:
+
+    # ── Composite formula breakdown ───────────────────────────────────────────
+    st.subheader("Composite Risk Formula", divider="red")
+    st.caption(
+        f"Phase 1 · {len(composite_report.active_agents)} of 3 agents active "
+        f"({', '.join(composite_report.active_agents)}) · "
+        "Supply Chain Agent pending (target weight: 0.20)"
+    )
+
+    _S_W  = 0.5625
+    _LC_W = 0.4375
+    s_contrib  = round(_S_W  * composite_report.structural_risk_score, 1)
+    lc_contrib = round(_LC_W * composite_report.lifecycle_risk_score, 1)
+    s_col   = _RISK_COLOURS.get(composite_report.structural_risk_level,  "#94a3b8")
+    lc_col  = _RISK_COLOURS.get(composite_report.lifecycle_risk_level,   "#94a3b8")
+    cmp_col = _RISK_COLOURS.get(composite_report.composite_risk_level,   "#94a3b8")
+
+    def _formula_card(weight, raw_score, contrib, agent_name, level, colour):
+        return (
+            f"<div style='text-align:center;padding:16px;border-radius:10px;"
+            f"background:#1e293b;border:1px solid #334155;height:140px'>"
+            f"<div style='font-size:11px;color:#64748b;text-transform:uppercase;"
+            f"letter-spacing:.05em;margin-bottom:4px'>{agent_name}</div>"
+            f"<div style='font-size:13px;color:#94a3b8'>{weight} × {raw_score:.1f}</div>"
+            f"<div style='font-size:30px;font-weight:700;color:{colour};line-height:1.1'>{contrib}</div>"
+            f"<div style='font-size:12px;font-weight:600;color:{colour}'>{level}</div>"
+            f"</div>"
+        )
+
+    fc1, fc2, fc3, fc4, fc5 = st.columns([4, 1, 4, 1, 4])
+    fc1.markdown(_formula_card(
+        "0.5625", composite_report.structural_risk_score, s_contrib,
+        "BOM Intelligence Agent", composite_report.structural_risk_level, s_col,
+    ), unsafe_allow_html=True)
+    fc2.markdown("<div style='text-align:center;font-size:28px;padding-top:52px;color:#64748b'>+</div>",
+                 unsafe_allow_html=True)
+    fc3.markdown(_formula_card(
+        "0.4375", composite_report.lifecycle_risk_score, lc_contrib,
+        "Lifecycle & Obsolescence Agent", composite_report.lifecycle_risk_level, lc_col,
+    ), unsafe_allow_html=True)
+    fc4.markdown("<div style='text-align:center;font-size:28px;padding-top:52px;color:#64748b'>=</div>",
+                 unsafe_allow_html=True)
+    fc5.markdown(_formula_card(
+        "", composite_report.composite_risk_score, composite_report.composite_risk_score,
+        "Composite Score", composite_report.composite_risk_level, cmp_col,
+    ), unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Compound risk signals ─────────────────────────────────────────────────
+    st.subheader("Compound Risk Signals", divider="orange")
+    if composite_report.correlation_signals:
+        for sig in composite_report.correlation_signals:
+            st.warning(sig, icon="⚡")
+    else:
+        st.success("No compound risk signals detected across agents.", icon="✅")
+
+    # ── Combined top risk drivers ─────────────────────────────────────────────
+    st.subheader("Combined Top Risk Drivers", divider="gray")
+    for msg in composite_report.top_risks:
+        st.markdown(f"› {msg}")
+
+    st.divider()
+
+    # ── Cross-agent component analysis ────────────────────────────────────────
+    st.subheader("Cross-Agent Component Analysis", divider="gray")
+    st.caption("Each component scored by both agents. ⚡ = HIGH or CRITICAL on both dimensions.")
+
+    _HIGH_LEVELS = {"HIGH", "CRITICAL"}
+    orch_rows = []
+    for sc in report.component_risks:
+        lc_c = _lc_lookup.get(sc.item_number)
+        s_lvl  = sc.substitute_risk.value
+        lc_lvl = lc_c.lifecycle_risk_level if lc_c else "—"
+        lc_scr = lc_c.lifecycle_risk_score  if lc_c else None
+        lc_stg = lc_c.lifecycle_stage       if lc_c else "—"
+        lc_yrs = (f"{lc_c.estimated_years_to_eol:.1f}"
+                  if lc_c and lc_c.estimated_years_to_eol is not None else "—")
+        compound = s_lvl in _HIGH_LEVELS and lc_lvl in _HIGH_LEVELS
+        orch_rows.append({
+            "⚡": "⚡" if compound else "",
+            "Item #":           sc.item_number,
+            "Description":      (sc.description or "")[:50],
+            "Manufacturer":     sc.manufacturer or "—",
+            "Structural Risk":  s_lvl,
+            "Struct. Score":    sc.risk_score,
+            "LC Stage":         lc_stg or "—",
+            "Lifecycle Risk":   lc_lvl,
+            "LC Score":         lc_scr,
+            "Yrs to EOL":       lc_yrs,
+        })
+
+    # Sort: compound first, then by sum of both scores descending
+    orch_rows.sort(key=lambda r: (
+        0 if r["⚡"] else 1,
+        -((r["Struct. Score"] or 0) + (r["LC Score"] or 0)),
+    ))
+    orch_df = pd.DataFrame(orch_rows)
+
+    n_compound = sum(1 for r in orch_rows if r["⚡"])
+    n_s_high   = sum(1 for r in orch_rows if r["Structural Risk"] in _HIGH_LEVELS)
+    n_lc_high  = sum(1 for r in orch_rows if r["Lifecycle Risk"] in _HIGH_LEVELS)
+
+    ot_all, ot_compound, ot_struct, ot_lc = st.tabs([
+        f"All ({len(orch_rows)})",
+        f"⚡ Both HIGH/CRITICAL ({n_compound})",
+        f"Structural HIGH ({n_s_high})",
+        f"Lifecycle HIGH ({n_lc_high})",
+    ])
+
+    def _show_orch_table(data: pd.DataFrame, tab_key: str) -> None:
+        st.download_button(
+            label="Export CSV",
+            data=data.to_csv(index=False).encode("utf-8"),
+            file_name=f"orchestrator-{tab_key}.csv",
+            mime="text/csv",
+            key=f"orch_csv_{tab_key}",
+        )
+        lc_score_col = [c for c in data.columns if c == "LC Score"]
+        struct_score_col = [c for c in data.columns if c == "Struct. Score"]
+        styled = data.style.map(_colour_risk, subset=["Structural Risk", "Lifecycle Risk"])
+        if struct_score_col:
+            styled = styled.background_gradient(subset=struct_score_col, cmap="RdYlGn_r", vmin=0, vmax=100)
+        if lc_score_col and data["LC Score"].notna().any():
+            styled = styled.background_gradient(subset=lc_score_col, cmap="RdYlGn_r", vmin=0, vmax=100)
+        styled = styled.format({"Struct. Score": "{:.1f}", "LC Score": lambda v: f"{v:.1f}" if v is not None else "—"})
+        st.dataframe(
+            styled,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "⚡":              st.column_config.TextColumn("",          width="small"),
+                "Description":     st.column_config.TextColumn("Description", width="large"),
+                "Structural Risk": st.column_config.TextColumn("Structural", width="small"),
+                "Struct. Score":   st.column_config.NumberColumn("S.Score",  format="%.1f", width="small"),
+                "LC Stage":        st.column_config.TextColumn("LC Stage",   width="small"),
+                "Lifecycle Risk":  st.column_config.TextColumn("Lifecycle",  width="small"),
+                "LC Score":        st.column_config.NumberColumn("LC Score",  format="%.1f", width="small"),
+                "Yrs to EOL":      st.column_config.TextColumn("Yrs EOL",    width="small"),
+            },
+        )
+        st.caption(f"{len(data)} components shown")
+
+    with ot_all:      _show_orch_table(orch_df, "all")
+    with ot_compound: _show_orch_table(orch_df[orch_df["⚡"] == "⚡"].copy(),                          "compound")
+    with ot_struct:   _show_orch_table(orch_df[orch_df["Structural Risk"].isin(_HIGH_LEVELS)].copy(),  "struct_high")
+    with ot_lc:       _show_orch_table(orch_df[orch_df["Lifecycle Risk"].isin(_HIGH_LEVELS)].copy(),   "lc_high")
+
+    # ── Component Inspector ───────────────────────────────────────────────────
+    st.subheader("Component Inspector", divider="gray")
+    st.caption("Select a manufacturer and MPN for the full combined risk report.")
+
+    orch_mfrs = sorted(m for m in set(c.manufacturer or "—" for c in report.component_risks) if m != "—")
+    orch_mfr_opts = ["— Select manufacturer —"] + orch_mfrs
+    sel_orch_mfr = st.selectbox(
+        "Manufacturer:", options=orch_mfr_opts,
+        key="orch_insp_mfr", label_visibility="collapsed",
+    )
+    if sel_orch_mfr != orch_mfr_opts[0]:
+        orch_mfr_comps = [c for c in report.component_risks if c.manufacturer == sel_orch_mfr]
+        orch_mpn_display = [f"{c.mpn or '—'}  ({c.item_number})" for c in orch_mfr_comps]
+        orch_mpn_to_item = {f"{c.mpn or '—'}  ({c.item_number})": c.item_number for c in orch_mfr_comps}
+        orch_mpn_opts = ["— Select MPN —"] + orch_mpn_display
+        sel_orch_mpn = st.selectbox(
+            "MPN:", options=orch_mpn_opts,
+            key="orch_insp_mpn", label_visibility="collapsed",
+        )
+        if sel_orch_mpn != orch_mpn_opts[0]:
+            orch_item_id = orch_mpn_to_item[sel_orch_mpn]
+            orch_struct_comp = _struct_lookup.get(orch_item_id)
+            if orch_struct_comp:
+                _show_component_detail(
+                    orch_struct_comp, G, "orch_insp",
+                    lc_comp=_lc_lookup.get(orch_item_id),
+                    corr_signals=composite_report.correlation_signals,
+                )
