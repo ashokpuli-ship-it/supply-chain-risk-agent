@@ -30,6 +30,16 @@
     tbody tr:hover { background: rgba(30,58,95,0.2); }
 
     .tag { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+
+    /* Expandable row detail panel */
+    .detail-row td { background: #0c1628; border-top: 1px dashed #334155; border-bottom: 1px dashed #334155; }
+    .detail-table th { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 4px 8px; }
+    .detail-table td { color: #cbd5e1; font-size: 12px; padding: 4px 8px; }
+
+    /* Sortable column headers */
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { color: #e2e8f0; }
+    .sort-indicator { margin-left: 4px; color: #6366f1; }
   </style>
 </head>
 <body class="min-h-screen">
@@ -121,11 +131,15 @@
       <!-- Toolbar -->
       <div class="px-4 py-3 border-b border-slate-700 flex flex-wrap gap-3 items-center">
         <h2 class="text-white font-semibold text-sm">Components</h2>
-        <div class="flex gap-1.5 ml-auto flex-wrap">
+        <div class="flex gap-1.5 ml-auto flex-wrap items-center">
           <button onclick="setFilter('ALL')"    id="btn-ALL"    class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-indigo-600 text-white">All</button>
           <button onclick="setFilter('HIGH')"   id="btn-HIGH"   class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">HIGH</button>
           <button onclick="setFilter('MEDIUM')" id="btn-MEDIUM" class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">MEDIUM</button>
           <button onclick="setFilter('LOW')"    id="btn-LOW"    class="filter-btn text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">LOW</button>
+          <button onclick="exportCSV()"
+            class="text-xs px-3 py-1 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600">
+            Export CSV
+          </button>
         </div>
         <input id="search" type="text" placeholder="Search item / description / MFR…"
           oninput="renderTable()" class="text-sm rounded-lg px-3 py-1.5 w-64" />
@@ -136,13 +150,13 @@
           <thead>
             <tr class="text-slate-400 text-xs uppercase tracking-wide">
               <th class="px-4 py-3 text-left">Item #</th>
-              <th class="px-4 py-3 text-left">Description</th>
-              <th class="px-4 py-3 text-left">Manufacturer</th>
+              <th id="th-description"   class="px-4 py-3 text-left sortable"  onclick="sortBy('description')">Description<span class="sort-indicator" id="si-description"></span></th>
+              <th id="th-manufacturer"  class="px-4 py-3 text-left sortable"  onclick="sortBy('manufacturer')">Manufacturer<span class="sort-indicator" id="si-manufacturer"></span></th>
               <th class="px-4 py-3 text-left">MPN</th>
               <th class="px-4 py-3 text-left">Risk</th>
-              <th class="px-4 py-3 text-right">Score</th>
+              <th id="th-risk_score"    class="px-4 py-3 text-right sortable" onclick="sortBy('risk_score')">Score<span class="sort-indicator" id="si-risk_score"></span></th>
               <th class="px-4 py-3 text-left">Alternates</th>
-              <th class="px-4 py-3 text-left">Lifecycle</th>
+              <th id="th-lifecycle_phase" class="px-4 py-3 text-left sortable" onclick="sortBy('lifecycle_phase')">Lifecycle<span class="sort-indicator" id="si-lifecycle_phase"></span></th>
             </tr>
           </thead>
           <tbody id="component-tbody" class="divide-y divide-slate-800"></tbody>
@@ -170,12 +184,17 @@
 </main>
 
 <script>
+  // ── State ────────────────────────────────────────────────────────────────────
   let allComponents = [];
-  let activeFilter = 'ALL';
-  const GAUGE_ARC = 213;
+  let activeFilter  = 'ALL';
+  const GAUGE_ARC   = 213;
+  let sortState     = { col: null, dir: 'asc' };
+  const expandedRows = new Set();   // item_numbers currently expanded
 
   const riskColour = { CRITICAL:'#ef4444', HIGH:'#f97316', MEDIUM:'#f59e0b', LOW:'#22c55e' };
+  const SORT_COLS  = ['description', 'manufacturer', 'risk_score', 'lifecycle_phase'];
 
+  // ── Utilities ────────────────────────────────────────────────────────────────
   function setStatus(ok, text) {
     document.getElementById('status-dot').className =
       'w-2 h-2 rounded-full inline-block ' + (ok ? 'bg-green-500' : 'bg-red-500');
@@ -186,6 +205,7 @@
   function esc(s)   { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function trunc(s,n){ s=String(s||''); return s.length>n ? s.slice(0,n)+'…':s; }
 
+  // ── Boot / load ──────────────────────────────────────────────────────────────
   async function boot() {
     try {
       const skus = await fetch('/risk/skus').then(r => r.json());
@@ -208,6 +228,9 @@
 
   async function loadSKU(skuId) {
     hide('error-state'); hide('empty-state');
+    expandedRows.clear();
+    sortState = { col: null, dir: 'asc' };
+    SORT_COLS.forEach(c => { const el = document.getElementById('si-'+c); if (el) el.textContent = ''; });
     try {
       const r = await fetch('/risk/sku/'+skuId).then(res => res.json());
       renderReport(r);
@@ -224,6 +247,7 @@
     catch(e) { document.getElementById('error-msg').textContent='Reload failed: '+e.message; show('error-state'); }
   }
 
+  // ── Render report ────────────────────────────────────────────────────────────
   function renderReport(report) {
     allComponents = report.component_risks;
     const total = report.total_components;
@@ -254,6 +278,7 @@
     renderTable();
   }
 
+  // ── Filter ───────────────────────────────────────────────────────────────────
   function setFilter(f) {
     activeFilter = f;
     ['ALL','HIGH','MEDIUM','LOW'].forEach(id => {
@@ -267,9 +292,123 @@
     renderTable();
   }
 
+  // ── Feature 3: Sort ──────────────────────────────────────────────────────────
+  function sortBy(col) {
+    if (sortState.col === col) {
+      sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortState.col = col;
+      sortState.dir = 'asc';
+    }
+    SORT_COLS.forEach(c => {
+      const el = document.getElementById('si-'+c);
+      if (el) el.textContent = '';
+    });
+    const activeEl = document.getElementById('si-'+col);
+    if (activeEl) activeEl.textContent = sortState.dir === 'asc' ? ' ▲' : ' ▼';
+    renderTable();
+  }
+
+  // ── Feature 1: Toggle row expand ─────────────────────────────────────────────
+  function toggleRow(itemNumber) {
+    if (expandedRows.has(itemNumber)) {
+      expandedRows.delete(itemNumber);
+    } else {
+      expandedRows.add(itemNumber);
+    }
+    renderTable();
+  }
+
+  // ── Feature 2: Where-used fetch ──────────────────────────────────────────────
+  async function fetchWhereUsed(itemId, containerEl) {
+    containerEl.innerHTML = '<span class="text-slate-500 text-xs">Loading…</span>';
+    try {
+      const data = await fetch('/component/'+encodeURIComponent(itemId)+'/where-used').then(r => {
+        if (!r.ok) throw new Error(r.status === 404 ? 'Not found in any loaded BOM' : 'Error '+r.status);
+        return r.json();
+      });
+      if (!data.length) {
+        containerEl.innerHTML = '<span class="text-slate-500 text-xs">Not used by any loaded SKU</span>';
+        return;
+      }
+      const rows = data.map(d =>
+        '<li class="text-xs py-0.5">'
+        +'<span class="font-mono text-indigo-300">'+esc(d.sku_id)+'</span>'
+        +(d.sku_description ? ' <span class="text-slate-400">— '+esc(trunc(d.sku_description,50))+'</span>' : '')
+        +'</li>'
+      ).join('');
+      containerEl.innerHTML = '<div class="text-slate-400 text-xs uppercase tracking-wide mb-1 mt-1">Used By</div>'
+        + '<ul class="space-y-0.5">'+rows+'</ul>';
+    } catch(e) {
+      containerEl.innerHTML = '<span class="text-red-400 text-xs">'+esc(e.message)+'</span>';
+    }
+  }
+
+  // ── Feature 1: Detail row renderer ───────────────────────────────────────────
+  function renderDetailRow(c) {
+    const driversHtml = (c.risk_drivers||[]).length
+      ? c.risk_drivers.map(d => '<li class="text-slate-300 text-xs py-0.5">› '+esc(d)+'</li>').join('')
+      : '<li class="text-slate-500 text-xs italic">No risk drivers recorded</li>';
+
+    const subRows = (c.substitutes||[]).length
+      ? c.substitutes.map(s =>
+          '<tr>'
+          +'<td class="font-mono text-indigo-300">'+esc(s.item_number)+'</td>'
+          +'<td>'+esc(s.manufacturer||'—')+'</td>'
+          +'<td class="font-mono">'+esc(s.mpn||'—')+'</td>'
+          +'<td>'+esc(s.lifecycle_phase||'—')+'</td>'
+          +'</tr>'
+        ).join('')
+      : '<tr><td colspan="4" class="text-slate-500 italic text-xs">No substitutes listed</td></tr>';
+
+    const unique = c.unique_to_samsara === true ? 'Yes' : (c.unique_to_samsara === false ? 'No' : '—');
+    const wuId = 'wu-' + c.item_number.replace(/[^a-zA-Z0-9]/g, '-');
+
+    return '<tr class="detail-row"><td colspan="8" class="px-6 py-4">'
+      + '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">'
+
+      // Left — metadata + where-used
+      + '<div class="space-y-3">'
+      + '<div>'
+      + '<div class="text-slate-400 text-xs uppercase tracking-wide mb-2">Component Details</div>'
+      + '<dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">'
+      + '<dt class="text-slate-500">Criticality</dt><dd class="text-slate-300">'+esc(c.criticality_type||'—')+'</dd>'
+      + '<dt class="text-slate-500">Country of Origin</dt><dd class="text-slate-300">'+esc(c.country_of_origin||'—')+'</dd>'
+      + '<dt class="text-slate-500">Lead Time</dt><dd class="text-slate-300">'+(c.lead_time_days ? c.lead_time_days+' days' : '—')+'</dd>'
+      + '<dt class="text-slate-500">MOQ</dt><dd class="text-slate-300">'+(c.moq||'—')+'</dd>'
+      + '<dt class="text-slate-500">Unique to Samsara</dt><dd class="text-slate-300">'+unique+'</dd>'
+      + '<dt class="text-slate-500">Multi Source</dt><dd class="text-slate-300">'+esc(c.multiple_source_status||'—')+'</dd>'
+      + '</dl>'
+      + '</div>'
+      + '<div>'
+      + '<button onclick="event.stopPropagation(); fetchWhereUsed(\''+c.item_number.replace(/'/g,"\\'") +'\', document.getElementById(\''+wuId+'\'))" '
+      + 'class="text-xs px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-indigo-300 font-medium">Where Used →</button>'
+      + '<div id="'+wuId+'" class="mt-2"></div>'
+      + '</div>'
+      + '</div>'
+
+      // Right — risk drivers + substitute table
+      + '<div class="space-y-3">'
+      + '<div>'
+      + '<div class="text-slate-400 text-xs uppercase tracking-wide mb-2">Risk Drivers</div>'
+      + '<ul class="space-y-0.5">'+driversHtml+'</ul>'
+      + '</div>'
+      + '<div>'
+      + '<div class="text-slate-400 text-xs uppercase tracking-wide mb-2">Substitutes</div>'
+      + '<table class="detail-table w-full"><thead><tr>'
+      + '<th class="text-left">Item #</th><th class="text-left">Manufacturer</th><th class="text-left">MPN</th><th class="text-left">Lifecycle</th>'
+      + '</tr></thead><tbody>'+subRows+'</tbody></table>'
+      + '</div>'
+      + '</div>'
+
+      + '</div>'
+      + '</td></tr>';
+  }
+
+  // ── Render table ─────────────────────────────────────────────────────────────
   function renderTable() {
     const q = (document.getElementById('search').value||'').toLowerCase();
-    const filtered = allComponents.filter(c => {
+    let filtered = allComponents.filter(c => {
       if (activeFilter !== 'ALL' && c.substitute_risk !== activeFilter) return false;
       if (q) {
         const hay = [c.item_number,c.description,c.manufacturer,c.mpn].filter(Boolean).join(' ').toLowerCase();
@@ -277,6 +416,16 @@
       }
       return true;
     });
+
+    // Feature 3: apply sort
+    if (sortState.col) {
+      const dir = sortState.dir === 'asc' ? 1 : -1;
+      filtered.sort((a, b) => {
+        const va = a[sortState.col] ?? '', vb = b[sortState.col] ?? '';
+        if (typeof va === 'number' && typeof vb === 'number') return dir * (va - vb);
+        return dir * String(va).localeCompare(String(vb));
+      });
+    }
 
     document.getElementById('component-tbody').innerHTML = filtered.map(c => {
       const risk = c.substitute_risk;
@@ -286,7 +435,8 @@
         : '<span class="tag" style="background:#1c1917;color:#78716c;border:1px solid #44403c">none</span>';
       const lcCls = c.lifecycle_phase === 'Development' ? 'text-yellow-400' : 'text-slate-400';
 
-      return '<tr class="row-'+risk+'">'
+      // Feature 1: clickable row + optional detail row below
+      const row = '<tr class="row-'+risk+'" style="cursor:pointer" onclick="toggleRow(\''+c.item_number.replace(/'/g,"\\'")+'\' )">'
         +'<td class="px-4 py-2.5 font-mono text-indigo-300 text-xs whitespace-nowrap">'+esc(c.item_number)+'</td>'
         +'<td class="px-4 py-2.5 text-slate-300 max-w-xs"><span title="'+esc(c.description||'')+'">'+esc(trunc(c.description||'',48))+'</span></td>'
         +'<td class="px-4 py-2.5 text-slate-400 whitespace-nowrap">'+esc(c.manufacturer||'—')+'</td>'
@@ -296,10 +446,52 @@
         +'<td class="px-4 py-2.5">'+subTag+'</td>'
         +'<td class="px-4 py-2.5 text-xs '+lcCls+'">'+esc(c.lifecycle_phase||'—')+'</td>'
         +'</tr>';
+
+      const detail = expandedRows.has(c.item_number) ? renderDetailRow(c) : '';
+      return row + detail;
     }).join('');
 
     document.getElementById('table-footer').textContent =
       'Showing '+filtered.length+' of '+allComponents.length+' components';
+  }
+
+  // ── Feature 4: CSV export ────────────────────────────────────────────────────
+  function exportCSV() {
+    const q = (document.getElementById('search').value||'').toLowerCase();
+    let data = allComponents.filter(c => {
+      if (activeFilter !== 'ALL' && c.substitute_risk !== activeFilter) return false;
+      if (q) {
+        const hay = [c.item_number,c.description,c.manufacturer,c.mpn].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    if (sortState.col) {
+      const dir = sortState.dir === 'asc' ? 1 : -1;
+      data.sort((a, b) => {
+        const va = a[sortState.col] ?? '', vb = b[sortState.col] ?? '';
+        if (typeof va === 'number' && typeof vb === 'number') return dir * (va - vb);
+        return dir * String(va).localeCompare(String(vb));
+      });
+    }
+
+    const headers = ['Item #','Description','Manufacturer','MPN','Risk','Score','Lifecycle','Criticality','Origin','Lead Time','MOQ','Unique','Alternates'];
+    const csvEsc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const rows = data.map(c => [
+      c.item_number, c.description||'', c.manufacturer||'', c.mpn||'',
+      c.substitute_risk, c.risk_score, c.lifecycle_phase||'', c.criticality_type||'',
+      c.country_of_origin||'', c.lead_time_days||'', c.moq||'',
+      c.unique_to_samsara === true ? 'Yes' : (c.unique_to_samsara === false ? 'No' : ''),
+      (c.substitutes||[]).length,
+    ].map(csvEsc).join(','));
+
+    const csv  = [headers.map(csvEsc).join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'bom-risk-export.csv';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
   }
 
   boot();

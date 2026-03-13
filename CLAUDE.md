@@ -68,8 +68,9 @@ The only built module is the **BOM Intelligence Agent** at `agents/bom_intellige
 | `substitute_analyzer.py` | Classifies each primary component's substitute risk (HIGH/MEDIUM/LOW) using manufacturer + region + lifecycle viability |
 | `risk_engine.py` | Aggregates component risks into `SKURiskReport` with weighted SKU score (0–100) |
 | `database.py` | SQLAlchemy ORM (`DBComponent`, `DBRiskScore`); gracefully degrades if no DB |
-| `api.py` | FastAPI app; serves endpoints + static `index.html`; holds in-memory BOM/report cache |
-| `streamlit_app.py` | Streamlit visual dashboard (gauge chart, filterable component table) |
+| `api.py` | FastAPI app; serves endpoints + static `index.html`; holds in-memory BOM/report/graph cache (`_bom_cache`, `_report_cache`, `_graph_cache`) |
+| `streamlit_app.py` | Streamlit visual dashboard: SKU gauge, metric cards with clickable drill-down expanders, two-step Manufacturer→MPN component inspector with full substitute detail (8-column table with Viable/Same Mfr/Same Region indicators), where-used, and per-tab CSV export |
+| `static/index.html` | Vanilla JS static dashboard: sortable columns, expandable component rows with inline detail panel (metadata, where-used fetch, risk drivers, substitute table), and CSV export |
 
 **Phase 1 → Phase 2 migration notes (in-code TODOs):**
 - `bom_graph_builder.py`: Replace NetworkX with Neo4j for multi-level BOMs and cross-SKU where-used
