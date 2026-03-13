@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import networkx as nx
 
-from models import BOMData, ComponentRisk, SKURiskReport, SubstituteRisk
+from models import (
+    AT_RISK_LIFECYCLE,
+    CRITICAL_TYPES,
+    BOMData,
+    ComponentRisk,
+    SKURiskReport,
+    SubstituteRisk,
+)
 from substitute_analyzer import analyze_substitutes
 
 # ── Scoring constants ──────────────────────────────────────────────────────────
-
-# Lifecycle phases that carry elevated risk (from Propel PLM data)
-_AT_RISK_LIFECYCLE = {"EOL", "LTB", "NRND"}
-
-# Criticality types that amplify component risk severity
-_CRITICAL_TYPES = {"Field", "Safety", "Field & Safety"}
 
 # SKU-level score: weighted sum of per-ratio contributions (result is 0–100)
 _SKU_WEIGHTS = {
@@ -90,13 +91,13 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
             drivers.append("Substitute available — different manufacturer and region")
 
         # ── Lifecycle modifier ─────────────────────────────────────────────────
-        if comp.lifecycle_phase in _AT_RISK_LIFECYCLE:
+        if comp.lifecycle_phase in AT_RISK_LIFECYCLE:
             score += _COMP_MODIFIERS["at_risk_lifecycle"]
             drivers.append(f"Lifecycle: {comp.lifecycle_phase}")
             at_risk_lifecycle_count += 1
 
         # ── Criticality amplification ──────────────────────────────────────────
-        if comp.criticality_type in _CRITICAL_TYPES:
+        if comp.criticality_type in CRITICAL_TYPES:
             score += _COMP_MODIFIERS["criticality"]
             drivers.append(f"Criticality: {comp.criticality_type}")
             critical_parts_count += 1
@@ -109,7 +110,7 @@ def compute_risk_report(bom: BOMData, G: nx.DiGraph) -> SKURiskReport:
 
         # ── Substitute lifecycle health (informational — no score impact) ──────
         at_risk_subs = [
-            s for s in subs if s.lifecycle_phase in _AT_RISK_LIFECYCLE
+            s for s in subs if s.lifecycle_phase in AT_RISK_LIFECYCLE
         ]
         if at_risk_subs:
             sub_detail = "; ".join(

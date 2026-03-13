@@ -41,6 +41,14 @@ On startup, both interfaces auto-load `Project Docs/Sample BOM.xlsx` if present.
 curl -X POST "http://localhost:8000/bom/load?filepath=/abs/path/to/BOM.xlsx"
 ```
 
+**Run tests**
+```bash
+cd agents/bom_intelligence
+.venv/bin/pip install pytest   # not in requirements.txt — install once
+.venv/bin/pytest test_risk_engine.py -v
+.venv/bin/pytest test_risk_engine.py -v -k "test_single_source"  # run one test by name
+```
+
 **If port 8000 is in use:**
 ```bash
 lsof -ti :8000 | xargs kill -9
@@ -74,7 +82,7 @@ The only built module is the **BOM Intelligence Agent** at `agents/bom_intellige
 ## System Architecture
 
 ```
-React Dashboard
+Static JS Dashboard (Phase 1) / React Dashboard (Phase 2 planned)
        |
     FastAPI
        |
@@ -92,6 +100,8 @@ Database Layer
   - Neo4j (Graph)
   - Vector DB
 ```
+
+> **Phase 1 dashboard note:** `static/index.html` is vanilla JS (SVG gauge, live search, risk filters). `streamlit_app.py` is an alternative Plotly-based visual dashboard. React frontend is planned for Phase 2.
 
 ## Planned Agents
 
@@ -122,7 +132,7 @@ The Agent Engine (LangGraph) orchestrates specialized agents running continuousl
 
 ## Tech Stack
 
-- **Frontend**: React dashboard
+- **Frontend**: Vanilla JS (`static/index.html`, Phase 1) → React (Phase 2 planned)
 - **Backend API**: FastAPI
 - **Agent Orchestration**: LangGraph
 - **Risk Engine**: Python
@@ -222,24 +232,6 @@ Additional factors (not yet active, to be added): supplier concentration, manual
 
 ### Samsara-Unique Parts
 If `Unique to Samsara = Yes`, the component has no ecosystem alternatives if discontinued. This increases component score by +10 and contributes to the SKU's unique_to_samsara weight.
-
-### Internal Microservices
-
-| Service | Responsibility | Libraries |
-|---|---|---|
-| BOM Extractor | Pull data from Propel PLM API | Python, FastAPI |
-| BOM Graph Builder | Build BOM network in Neo4j | networkx, neo4j driver |
-| Substitute Analyzer | Detect alternate coverage (mfr + region + lifecycle) | — |
-| Single Source Detector | Identify vulnerable components | — |
-| Where Used Engine | Cross-SKU dependency mapping | — |
-| Risk Scoring Engine | Convert component risk → SKU score | — |
-
-### Data Flow
-
-```
-Propel PLM API → BOM Extractor → Graph Builder → Substitute Analyzer
-→ Single Source Detector → Where Used Engine → Risk Scoring Engine → Risk API
-```
 
 ### FastAPI Endpoints
 

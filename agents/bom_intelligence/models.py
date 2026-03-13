@@ -6,6 +6,13 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+# Lifecycle phases that carry elevated risk — shared across modules
+AT_RISK_LIFECYCLE: set[str] = {"EOL", "LTB", "NRND"}
+
+# Criticality types that amplify component risk severity
+CRITICAL_TYPES: set[str] = {"Field", "Safety", "Field & Safety"}
+
+
 class SubstituteRisk(str, Enum):
     HIGH = "HIGH"       # No substitute — single source
     MEDIUM = "MEDIUM"   # Substitute exists but same manufacturer or same region

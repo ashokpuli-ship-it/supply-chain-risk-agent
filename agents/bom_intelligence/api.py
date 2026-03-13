@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+import networkx as nx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +24,7 @@ _STATIC_DIR = _HERE / "static"
 _SAMPLE_BOM = _HERE.parent.parent / "Project Docs" / "Sample BOM.xlsx"
 
 _bom_cache: dict[str, BOMData] = {}
+_graph_cache: dict[str, nx.DiGraph] = {}
 _report_cache: dict[str, SKURiskReport] = {}
 
 
@@ -57,6 +59,7 @@ def _load_and_cache(filepath: str) -> SKURiskReport:
     G = build_graph(bom)
     report = compute_risk_report(bom, G)
     _bom_cache[bom.sku_id] = bom
+    _graph_cache[bom.sku_id] = G
     _report_cache[bom.sku_id] = report
     _persist_to_db(bom, report)
     return report
@@ -105,6 +108,9 @@ def _persist_to_db(bom: BOMData, report: SKURiskReport) -> None:
         ))
 
 
+# TODO: Phase 2 — restrict filepath to a safe upload directory to prevent path traversal.
+# This endpoint currently accepts arbitrary filesystem paths, which is acceptable for local
+# POC use but must be sandboxed before any network-accessible deployment.
 @app.post("/bom/load", response_model=SKURiskReport,
           summary="Load a BOM from an Excel file and run risk analysis")
 async def load_bom(
@@ -188,7 +194,7 @@ async def where_used(item_id: str):
         item_in_bom = any(c.item_number == item_id for c in bom.components)
         if not item_in_bom:
             continue
-        G = build_graph(bom)
+        G = _graph_cache.get(sku_id) or build_graph(bom)
         used_by = get_where_used(G, item_id)
         results.append({
             "sku_id": sku_id,

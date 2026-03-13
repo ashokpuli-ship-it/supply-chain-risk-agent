@@ -62,8 +62,11 @@ def fetch_from_excel(filepath: str | Path) -> BOMData:
     - Substitute rows have Is Substitute = True and Substitute For = <primary item number>
     """
     wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
-    ws = wb.active
-    rows = [r for r in ws.iter_rows(values_only=True) if any(c is not None for c in r)]
+    try:
+        ws = wb.active
+        rows = [r for r in ws.iter_rows(values_only=True) if any(c is not None for c in r)]
+    finally:
+        wb.close()
 
     if not rows:
         raise ValueError(f"Empty workbook: {filepath}")

@@ -3,8 +3,10 @@
 
 # Virtual environment
 .venv/
+venv/
+env/
 
-# Environment variables
+# Environment variables (use .env.example as template)
 .env
 
 # Python
@@ -12,6 +14,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
 .Python
 
 # macOS
@@ -20,3 +23,12 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Database
+*.db
+*.sqlite3
+
+# Jupyter
+.ipynb_checkpoints/

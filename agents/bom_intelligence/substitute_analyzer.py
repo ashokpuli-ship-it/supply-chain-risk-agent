@@ -3,10 +3,7 @@ from __future__ import annotations
 import networkx as nx
 
 from bom_graph_builder import get_substitutes
-from models import BOMComponent, BOMData, SubstituteInfo, SubstituteRisk
-
-# Defined here to avoid circular import with risk_engine
-_AT_RISK_LIFECYCLE = {"EOL", "LTB", "NRND"}
+from models import AT_RISK_LIFECYCLE, BOMComponent, BOMData, SubstituteInfo, SubstituteRisk
 
 
 def analyze_substitutes(
@@ -73,7 +70,7 @@ def _classify(primary: BOMComponent, subs: list[SubstituteInfo]) -> SubstituteRi
 
     # Only count substitutes with a viable (non-at-risk) lifecycle as true coverage
     # None lifecycle = unknown = assume viable (don't penalise missing data)
-    viable_subs = [s for s in subs if s.lifecycle_phase not in _AT_RISK_LIFECYCLE]
+    viable_subs = [s for s in subs if s.lifecycle_phase not in AT_RISK_LIFECYCLE]
 
     if not viable_subs:
         # Substitutes exist but all are EOL/LTB/NRND — effectively no real coverage
